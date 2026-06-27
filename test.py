@@ -18,6 +18,7 @@ speed = 0.0
 gear = 1
 throttle = 0.0
 pop_burst = 0.0      # ani egzoz patlamasi tetigi (lift/vites/limiter)
+bov_burst = 0.0      # blow-off valf tetigi (boost altinda gaz kesince)
 auto = True          # otomatik vites
 exhaust_mode = True  # True=EGZOZ (disardan), False=MOTOR (kabin)
 brake = 0.0
@@ -72,6 +73,8 @@ NZ_B, NZ_A = signal.butter(2, [500 / (SR / 2), 2200 / (SR / 2)], btype="band")
 OUT_B, OUT_A = signal.butter(2, 7500 / (SR / 2), btype="low")
 # "Motor" modu icin ek bogma lowpass (egzoz modunda atlanir)
 MUF_B, MUF_A = signal.butter(2, 1900 / (SR / 2), btype="low")
+# Blow-off / dump valf "psshh" (genis bantli hava gurultusu)
+BOV_B, BOV_A = signal.butter(2, [1200 / (SR / 2), 6500 / (SR / 2)], btype="band")
 
 # -------------------- Egzoz patlama cekirdekleri --------------------
 # Her "pat" = keskin atak + alt thump + parlak catirti, ustel sonum.
@@ -104,7 +107,10 @@ class Engine:
         self.zi_nz = np.zeros(len(NZ_A) - 1)
         self.zi_out = np.zeros(len(OUT_A) - 1)
         self.zi_muf = np.zeros(len(MUF_A) - 1)
+        self.zi_bov = np.zeros(len(BOV_A) - 1)
         self.pop_tail = np.zeros(POP_LEN)   # bloklar arasi patlama kuyrugu
+        self.boost = 0.0                    # turbo basinci (0..1), gecikmeli spool
+        self.bov = 0.0                      # blow-off zarf
         self.idx = np.arange(BLOCK)
 
     def callback(self, out, frames, t, status):
@@ -181,13 +187,25 @@ class Engine:
         nz_gain = (0.04 + 0.20 * thr) * (0.7 if exhaust_mode else 1.6)
         sig += nz * nz_gain
 
-        # --- turbo whine ---
-        tf = 1100 + rn * 5200
+        # --- turbo spool (gecikmeli basinc) + whine ---
+        global bov_burst
+        btar = thr * float(np.clip((r - 1500) / 2500, 0, 1))
+        # yukselis yavas (spool), dususte daha hizli
+        self.boost += (btar - self.boost) * (0.030 if btar > self.boost else 0.10)
+        tf = 1200 + self.boost * 2600 + rn * 3200      # boost & devirle tizleşir
         ti = tf / SR
         tph = self.turbo_ph + self.idx * ti
         self.turbo_ph = (self.turbo_ph + frames * ti) % 1.0
-        turbo_gain = 0.05 if exhaust_mode else 0.10
-        sig += np.sin(2 * np.pi * tph) * (turbo_gain * thr * (0.3 + rn))
+        tgain = (0.05 if exhaust_mode else 0.11) * (0.25 + 0.9 * self.boost)
+        sig += np.sin(2 * np.pi * tph) * tgain
+
+        # --- blow-off / dump valf "psshh" (boost varken gaz kesilince) ---
+        self.bov = max(self.bov * 0.86, bov_burst)
+        bov_burst *= 0.4
+        if self.bov > 0.02:
+            bn = np.random.randn(frames)
+            bn, self.zi_bov = signal.lfilter(BOV_B, BOV_A, bn, zi=self.zi_bov)
+            sig += bn * self.bov * (0.7 if exhaust_mode else 0.9)
 
         # --- mod bogma: MOTOR modunda ekstra lowpass (kabin/mekanik his) ---
         if not exhaust_mode:
@@ -297,9 +315,11 @@ while running:
             gear -= 1                                  # kickdown
     shift_timer = max(0.0, shift_timer - dt)
 
-    # --- egzoz patlamasi tetikleyicileri ---
+    # --- egzoz patlamasi & blow-off tetikleyicileri ---
     if prev_thr > 0.45 and throttle < 0.2 and rpm > 2600:
         pop_burst = 1.0                                # gaz birakma -> pat pat
+    if prev_thr > 0.55 and throttle < 0.3 and rpm > 2400:
+        bov_burst = 1.0                                # boost altinda lift -> psshh
     if rpm >= REDLINE and throttle > 0.5:
         pop_burst = max(pop_burst, 0.7)                # limiter -> dut dut
     prev_thr = throttle
