@@ -6,7 +6,7 @@ from scipy import signal
 
 pygame.init()
 
-WIDTH, HEIGHT = 700, 420
+WIDTH, HEIGHT = 920, 560
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("Audi RS7 4.0 TFSI V8 Biturbo")
 font = pygame.font.SysFont(None, 48)
@@ -337,6 +337,61 @@ def rpm_from_speed(v_ms, g):
     return IDLE_RPM + (v_ms / TIRE_CIRC) * gear_ratios[g] * FINAL * 60.0
 
 
+# -------------------- HUD: analog gauge cizimi --------------------
+_f_small = pygame.font.SysFont("Arial", 18)
+_f_med = pygame.font.SysFont("Arial", 22, bold=True)
+_f_big = pygame.font.SysFont("Arial", 40, bold=True)
+_f_unit = pygame.font.SysFont("Arial", 16)
+GA0, GA1 = math.radians(135), math.radians(135 + 270)   # gauge yay araligi
+
+
+def draw_gauge(cx, cy, R, frac, label, value_text, unit, ticks, redline_frac=None):
+    frac = max(0.0, min(1.0, frac))
+    pygame.draw.circle(screen, (22, 24, 30), (cx, cy), R)
+    pygame.draw.circle(screen, (60, 62, 72), (cx, cy), R, 3)
+    # redline yayi
+    if redline_frac is not None:
+        steps = 24
+        for i in range(steps):
+            f = redline_frac + (1 - redline_frac) * i / steps
+            a = GA0 + (GA1 - GA0) * f
+            x = cx + math.cos(a) * (R - 7)
+            y = cy + math.sin(a) * (R - 7)
+            pygame.draw.circle(screen, (200, 50, 50), (int(x), int(y)), 3)
+    # tik isaretleri + rakamlar
+    for i in range(ticks + 1):
+        f = i / ticks
+        a = GA0 + (GA1 - GA0) * f
+        ca, sa = math.cos(a), math.sin(a)
+        red = redline_frac is not None and f >= redline_frac - 1e-6
+        col = (230, 70, 70) if red else (190, 192, 200)
+        pygame.draw.line(screen, col, (cx + ca * (R - 6), cy + sa * (R - 6)),
+                         (cx + ca * (R - 20), cy + sa * (R - 20)), 3 if red else 2)
+        num = _f_small.render(str(int(round(i * (ticks_max_for(ticks, label)) / ticks))),
+                              True, col)
+        screen.blit(num, (cx + ca * (R - 38) - num.get_width() / 2,
+                          cy + sa * (R - 38) - num.get_height() / 2))
+    # ibre
+    a = GA0 + (GA1 - GA0) * frac
+    ca, sa = math.cos(a), math.sin(a)
+    pygame.draw.line(screen, (255, 70, 60), (cx - ca * 14, cy - sa * 14),
+                     (cx + ca * (R - 26), cy + sa * (R - 26)), 4)
+    pygame.draw.circle(screen, (210, 210, 220), (cx, cy), 8)
+    pygame.draw.circle(screen, (40, 40, 48), (cx, cy), 4)
+    # yazilar (gobekle cakismayacak sekilde)
+    lbl = _f_unit.render(label, True, (150, 152, 160))
+    screen.blit(lbl, (cx - lbl.get_width() / 2, cy - R * 0.52))
+    val = _f_big.render(value_text, True, (240, 242, 250))
+    screen.blit(val, (cx - val.get_width() / 2, cy + R * 0.22))
+    un = _f_unit.render(unit, True, (150, 152, 160))
+    screen.blit(un, (cx - un.get_width() / 2, cy + R * 0.50))
+
+
+def ticks_max_for(ticks, label):
+    # gauge ust skala degeri (devir x1000 veya hiz)
+    return 8 if label == "RPM x1000" else 320
+
+
 # -------------------- Ana dongu --------------------
 running = True
 prev_thr = 0.0
@@ -517,46 +572,62 @@ while running:
 
     speed = v * 3.6
 
-    # --- HUD ---
-    screen.fill((10, 10, 12))
+    # --- HUD: Audi Virtual Cockpit tarzi ---
+    screen.fill((12, 13, 17))
     over = rpm >= REDLINE
-    col = (255, 60, 60) if over else (255, 255, 255)
-    screen.blit(font.render(f"RPM: {int(rpm)}", True, col), (50, 40))
-    screen.blit(font.render(f"KM/H: {int(speed)}", True, (255, 255, 255)), (50, 105))
-    mode = "OTO" if auto else "MANUEL"
-    snd = "EGZOZ" if exhaust_mode else "MOTOR"
+
+    # iki analog kadran (devir saati 0-8 x1000, redline 6.8)
+    draw_gauge(210, 250, 150, rpm / 8000.0, "RPM x1000",
+               f"{int(rpm)}", "1/min", 8, redline_frac=REDLINE / 8000.0)
+    draw_gauge(710, 250, 150, speed / 320.0, "HIZ",
+               f"{int(speed)}", "km/h", 8)
+
+    # orta panel: vites + durum
     gtxt = "N" if gear == 0 else str(gear)
-    screen.blit(font.render(f"VITES: {gtxt}  [{mode}]", True, (255, 255, 255)), (50, 170))
-    gcol = (120, 220, 120) if throttle > 0 else ((255, 120, 120) if brake else (255, 255, 255))
-    screen.blit(font.render(f"GAZ: %{int(throttle*100)}   SES: {snd}", True, gcol), (50, 235))
-    if wheelspin > 0.05:
-        screen.blit(pygame.font.SysFont(None, 30).render("PATINAJ!", True, (255, 160, 40)), (300, 240))
-    # motor durumu rozeti
+    gear_col = (90, 220, 90) if running else (110, 110, 120)
+    gsurf = pygame.font.SysFont("Arial", 110, bold=True).render(gtxt, True, gear_col)
+    screen.blit(gsurf, (WIDTH / 2 - gsurf.get_width() / 2, 175))
+    mode = "OTO" if auto else "MANUEL"
+    msurf = _f_small.render(mode, True, (160, 162, 172))
+    screen.blit(msurf, (WIDTH / 2 - msurf.get_width() / 2, 300))
+
+    # motor durumu rozeti (ust orta)
     if cranking:
         est, ecol = "MARŞ...", (255, 200, 80)
     elif engine_on:
-        est, ecol = "● CALISIYOR", (90, 220, 90)
+        est, ecol = "● MOTOR CALISIYOR", (90, 220, 90)
     else:
-        est, ecol = "○ KAPALI - SPACE ile calistir", (200, 90, 90)
-    screen.blit(pygame.font.SysFont(None, 30).render(est, True, ecol), (360, 48))
-    # performans paneli (sag ust)
-    perf = pygame.font.SysFont(None, 26)
+        est, ecol = "○ KAPALI — SPACE", (210, 90, 90)
+    es = _f_med.render(est, True, ecol)
+    screen.blit(es, (WIDTH / 2 - es.get_width() / 2, 30))
+
+    # gaz/fren/ses durumu (orta)
+    snd = "EGZOZ" if exhaust_mode else "MOTOR"
+    info = _f_small.render(f"GAZ %{int(throttle*100)}   SES: {snd}", True, (170, 172, 182))
+    screen.blit(info, (WIDTH / 2 - info.get_width() / 2, 62))
+    if wheelspin > 0.05:
+        ws = _f_med.render("PATINAJ!", True, (255, 160, 40))
+        screen.blit(ws, (WIDTH / 2 - ws.get_width() / 2, 330))
     if launching:
-        screen.blit(perf.render("LAUNCH CONTROL HAZIR", True, (255, 210, 70)), (360, 95))
-    elif timing:
-        screen.blit(perf.render(f"0-100: {accel_timer:.2f}s" if t100_mark is None
-                                else f"0-100: {t100_mark:.2f}s", True, (120, 220, 255)), (360, 95))
+        lc = _f_med.render("◉ LAUNCH CONTROL", True, (255, 210, 70))
+        screen.blit(lc, (WIDTH / 2 - lc.get_width() / 2, 330))
+
+    # performans paneli (alt)
+    py = 430
+    if timing:
+        tcur = t100_mark if t100_mark else accel_timer
+        screen.blit(_f_med.render(f"0-100: {tcur:.2f}s", True, (120, 220, 255)), (40, py))
     b1 = f"EN IYI 0-100: {best_0_100:.2f}s" if best_0_100 else "EN IYI 0-100: --"
-    screen.blit(perf.render(b1, True, (150, 200, 150)), (360, 122))
+    screen.blit(_f_small.render(b1, True, (150, 200, 150)), (40, py + 28))
     if best_qmile:
-        screen.blit(perf.render(f"1/4 MIL: {best_qmile[0]:.2f}s @ {int(best_qmile[1])}", True, (150, 200, 150)), (360, 146))
-    small = pygame.font.SysFont(None, 24)
-    screen.blit(small.render("SPACE=calistir/durdur  YUKARI=gaz  SHIFT+YUKARI=TAM GAZ  ASAGI=fren", True, (150, 150, 160)), (50, 290))
-    screen.blit(small.render("A=oto/manuel  M=motor/egzoz  N=bos vites  SOL/SAG=vites", True, (150, 150, 160)), (50, 312))
-    bw = int((rpm - IDLE_RPM) / (MAX_RPM - IDLE_RPM) * (WIDTH - 100))
-    pygame.draw.rect(screen, (40, 40, 40), (50, 340, WIDTH - 100, 22))
-    pygame.draw.rect(screen, (255, 80, 80) if over else (80, 200, 80),
-                     (50, 340, max(0, bw), 22))
+        screen.blit(_f_small.render(f"1/4 MIL: {best_qmile[0]:.2f}s @ {int(best_qmile[1])} km/h",
+                                    True, (150, 200, 150)), (40, py + 50))
+
+    # kontrol ipuclari (alt)
+    screen.blit(_f_small.render("SPACE calistir  •  ↑ gaz  •  SHIFT+↑ tam gaz  •  ↓ fren  •  N bos",
+                                True, (110, 112, 122)), (40, HEIGHT - 46))
+    screen.blit(_f_small.render("A oto/manuel  •  M motor/egzoz ses  •  ←/→ vites  •  1-8 direkt vites",
+                                True, (110, 112, 122)), (40, HEIGHT - 24))
     pygame.display.flip()
 
 stream.stop()
