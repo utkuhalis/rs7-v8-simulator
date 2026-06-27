@@ -24,6 +24,7 @@ exhaust_mode = True  # True=EGZOZ (disardan), False=MOTOR (kabin)
 brake = 0.0
 engine_on = False    # motor calisiyor mu
 cranking = False     # mars donuyor mu
+limiter = False      # devir limitine vuruyor mu (sert kesme)
 
 gear_ratios = {1: 4.71, 2: 3.14, 3: 2.10, 4: 1.67,
                5: 1.29, 6: 1.00, 7: 0.84, 8: 0.67}
@@ -113,6 +114,7 @@ class Engine:
         self.pop_tail = np.zeros(POP_LEN)   # bloklar arasi patlama kuyrugu
         self.boost = 0.0                    # turbo basinci (0..1), gecikmeli spool
         self.bov = 0.0                      # blow-off zarf
+        self.lim_ph = 0.0                   # rev-limiter kesme fazi
         self.idx = np.arange(BLOCK)
 
     def callback(self, out, frames, t, status):
@@ -217,6 +219,14 @@ class Engine:
         # --- mod bogma: MOTOR modunda ekstra lowpass (kabin/mekanik his) ---
         if not exhaust_mode:
             sig, self.zi_muf = signal.lfilter(MUF_B, MUF_A, sig, zi=self.zi_muf)
+
+        # --- rev-limiter: motoru ritmik kes ("dut-dut-dut") ---
+        if limiter:
+            lf = 17.0 / SR                       # ~17 Hz kesme
+            lph = self.lim_ph + self.idx * lf
+            self.lim_ph = (self.lim_ph + frames * lf) % 1.0
+            gate = 0.18 + 0.82 * (np.sin(2 * np.pi * lph) > -0.1)
+            sig *= gate
 
         # --- mars motoru cizirtisi (calistirma aninda) ---
         if cranking:
@@ -347,7 +357,8 @@ while running:
         if gear < 8 and rpm > 6550 and throttle > 0.05:
             gear += 1
             shift_timer = 0.12
-            pop_burst = 1.0                            # yukari vites -> bang
+            pop_burst = 1.0                            # yukari vites -> BRAP bang
+            bov_burst = max(bov_burst, 0.6)            # vites arasi turbo flutter
         elif gear > 1 and rpm < 2300 and throttle < 0.85:
             gear -= 1
         elif gear > 1 and throttle > 0.92 and rpm < 3200:
@@ -360,8 +371,8 @@ while running:
             pop_burst = 1.0                            # gaz birakma -> pat pat
         if prev_thr > 0.55 and throttle < 0.3 and rpm > 2400:
             bov_burst = 1.0                            # boost altinda lift -> psshh
-        if rpm >= REDLINE and throttle > 0.5:
-            pop_burst = max(pop_burst, 0.7)            # limiter -> dut dut
+    # rev-limiter sert kesme (gaz tam + devir tavanda)
+    limiter = running and rpm >= REDLINE - 30 and throttle > 0.5
     prev_thr = throttle
 
     # --- tahrik & fizik ---
