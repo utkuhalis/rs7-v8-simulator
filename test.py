@@ -68,8 +68,10 @@ for r in RESONATORS:
     r["b"], r["a"] = rbj_bandpass(r["f"], r["Q"])
     r["zi"] = np.zeros(2)
 
-# Sub-bass (gogus thump)
-SUB_B, SUB_A = signal.butter(2, 120 / (SR / 2), btype="low")
+# Sub-bass (gogus thump) - derin alt frekanslar
+SUB_B, SUB_A = signal.butter(2, 95 / (SR / 2), btype="low")
+# Ruzgar / yol gurultusu (hizla artar, stereo dekorele)
+WIND_B, WIND_A = signal.butter(2, [220 / (SR / 2), 3200 / (SR / 2)], btype="band")
 # Intake / induction gurultusu
 NZ_B, NZ_A = signal.butter(2, [500 / (SR / 2), 2200 / (SR / 2)], btype="band")
 # Genel cikis lowpass (sertligi alir)
@@ -115,6 +117,9 @@ class Engine:
         self.boost = 0.0                    # turbo basinci (0..1), gecikmeli spool
         self.bov = 0.0                      # blow-off zarf
         self.lim_ph = 0.0                   # rev-limiter kesme fazi
+        self.zi_windL = np.zeros(len(WIND_A) - 1)
+        self.zi_windR = np.zeros(len(WIND_A) - 1)
+        self.dly_tail = np.zeros(14)        # stereo genislik (Haas) gecikmesi
         self.idx = np.arange(BLOCK)
 
     def callback(self, out, frames, t, status):
@@ -155,11 +160,11 @@ class Engine:
             w = res["base"] + res["load"] * (0.3 + 0.7 * thr)
             body += w * y
 
-        # --- sub-bass thump ---
+        # --- sub-bass thump (derin gogus frekanslari) ---
         sub, self.zi_sub = signal.lfilter(SUB_B, SUB_A, imp, zi=self.zi_sub)
-        sub *= 2.2
+        sub *= 2.7
 
-        sig = 4.4 * body + 1.9 * sub
+        sig = 4.4 * body + 2.3 * sub
 
         # --- egzoz patlamalari: gercek "pat" cekirdekleri, overlap-add ---
         global pop_burst
@@ -240,11 +245,24 @@ class Engine:
         sig, self.zi_out = signal.lfilter(OUT_B, OUT_A, sig, zi=self.zi_out)
         master = 0.62 if exhaust_mode else 0.55
         drive = (1.8 + 1.0 * thr) if exhaust_mode else (1.3 + 0.6 * thr)
-        out[:, 0] = (np.tanh(sig * drive) * master).astype(np.float32)
+        mono = np.tanh(sig * drive) * master
+
+        # --- stereo genislik: R kanali kucuk gecikme (Haas) ---
+        delayed = np.concatenate([self.dly_tail, mono])
+        right_eng = delayed[:frames]
+        self.dly_tail = mono[-14:]
+
+        # --- ruzgar / yol gurultusu (hizla artar, stereo dekorele) ---
+        wind_amt = float(np.clip(speed / 260.0, 0, 1)) ** 1.3 * 0.30
+        wL, self.zi_windL = signal.lfilter(WIND_B, WIND_A, np.random.randn(frames), zi=self.zi_windL)
+        wR, self.zi_windR = signal.lfilter(WIND_B, WIND_A, np.random.randn(frames), zi=self.zi_windR)
+
+        out[:, 0] = (mono + wL * wind_amt).astype(np.float32)
+        out[:, 1] = (right_eng + wR * wind_amt).astype(np.float32)
 
 
 eng = Engine()
-stream = sd.OutputStream(samplerate=SR, blocksize=BLOCK, channels=1,
+stream = sd.OutputStream(samplerate=SR, blocksize=BLOCK, channels=2,
                          dtype="float32", callback=eng.callback)
 stream.start()
 
