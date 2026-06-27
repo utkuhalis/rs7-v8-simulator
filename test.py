@@ -22,6 +22,8 @@ bov_burst = 0.0      # blow-off valf tetigi (boost altinda gaz kesince)
 auto = True          # otomatik vites
 exhaust_mode = True  # True=EGZOZ (disardan), False=MOTOR (kabin)
 brake = 0.0
+engine_on = False    # motor calisiyor mu
+cranking = False     # mars donuyor mu
 
 gear_ratios = {1: 4.71, 2: 3.14, 3: 2.10, 4: 1.67,
                5: 1.29, 6: 1.00, 7: 0.84, 8: 0.67}
@@ -114,6 +116,11 @@ class Engine:
         self.idx = np.arange(BLOCK)
 
     def callback(self, out, frames, t, status):
+        # --- motor kapali: sessizlik ---
+        if not engine_on and not cranking:
+            out[:] = 0.0
+            return
+
         # --- parametre yumusatma ---
         self.s_rpm += (rpm - self.s_rpm) * 0.30
         self.s_thr += (throttle - self.s_thr) * 0.25
@@ -211,6 +218,14 @@ class Engine:
         if not exhaust_mode:
             sig, self.zi_muf = signal.lfilter(MUF_B, MUF_A, sig, zi=self.zi_muf)
 
+        # --- mars motoru cizirtisi (calistirma aninda) ---
+        if cranking:
+            stf = 95.0 / SR                      # marş diŝlisi vinlamasi
+            sph = self.turbo_ph * 3 + self.idx * stf
+            whir = signal.sawtooth(2 * np.pi * sph) * 0.10
+            whir *= (0.7 + 0.3 * np.random.rand(frames))
+            sig = sig * 0.45 + whir              # chug + marş
+
         # --- cikis lowpass + yumusak limit (tanh = egzoz griftligi) ---
         sig, self.zi_out = signal.lfilter(OUT_B, OUT_A, sig, zi=self.zi_out)
         master = 0.62 if exhaust_mode else 0.55
@@ -237,6 +252,8 @@ REV_K = 20.0                     # serbest devir ivme katsayisi (bos viteste)
 REV_FR = 0.040                   # motor ic surtunmesi (devir dususu)
 v = 0.0                          # m/s
 rev_rpm = IDLE_RPM               # bos viteste serbest motor devri
+crank_t = 0.0                    # mars suresi sayaci
+idle_phase = 0.0                 # rolanti dalgalanma fazi
 
 
 def pick_gear(v_ms):
@@ -271,7 +288,14 @@ while running:
         if e.type == pygame.QUIT:
             running = False
         if e.type == pygame.KEYDOWN:
-            if e.key == pygame.K_a:
+            if e.key == pygame.K_SPACE:
+                if engine_on:                         # SPACE = calistir/durdur
+                    engine_on = False
+                    cranking = False
+                elif not cranking:
+                    cranking = True
+                    crank_t = 0.0
+            elif e.key == pygame.K_a:
                 auto = not auto                       # A = oto/manuel
             elif e.key == pygame.K_m:
                 exhaust_mode = not exhaust_mode       # M = motor/egzoz sesi
@@ -297,14 +321,29 @@ while running:
     brake = 1.0 if keys[pygame.K_DOWN] else 0.0
 
     in_gear = gear != 0
-    if in_gear:
+    running = engine_on and not cranking
+
+    # --- ates / devir durumu ---
+    if cranking:
+        crank_t += dt
+        rpm = 260 + 70 * math.sin(crank_t * 38)        # marş chug
+        rev_rpm = IDLE_RPM
+        if crank_t > 0.75:                             # motor tutuştu
+            cranking = False
+            engine_on = True
+            running = True
+            pop_burst = 0.5                            # calisirken hafif blip
+    elif not engine_on:
+        rpm = 0.0
+        throttle = 0.0
+    elif in_gear:
         rpm = max(IDLE_RPM, min(rpm_from_speed(v, gear), MAX_RPM))
         rev_rpm = rpm                                  # N'e gecince yumusak
     else:
         rpm = rev_rpm                                  # bos vites: serbest devir
 
-    # --- otomatik vites (sadece viteste) ---
-    if auto and in_gear and shift_timer <= 0:
+    # --- otomatik vites (sadece calisirken & viteste) ---
+    if running and auto and in_gear and shift_timer <= 0:
         if gear < 8 and rpm > 6550 and throttle > 0.05:
             gear += 1
             shift_timer = 0.12
@@ -316,17 +355,17 @@ while running:
     shift_timer = max(0.0, shift_timer - dt)
 
     # --- egzoz patlamasi & blow-off tetikleyicileri ---
-    if prev_thr > 0.45 and throttle < 0.2 and rpm > 2600:
-        pop_burst = 1.0                                # gaz birakma -> pat pat
-    if prev_thr > 0.55 and throttle < 0.3 and rpm > 2400:
-        bov_burst = 1.0                                # boost altinda lift -> psshh
-    if rpm >= REDLINE and throttle > 0.5:
-        pop_burst = max(pop_burst, 0.7)                # limiter -> dut dut
+    if running:
+        if prev_thr > 0.45 and throttle < 0.2 and rpm > 2600:
+            pop_burst = 1.0                            # gaz birakma -> pat pat
+        if prev_thr > 0.55 and throttle < 0.3 and rpm > 2400:
+            bov_burst = 1.0                            # boost altinda lift -> psshh
+        if rpm >= REDLINE and throttle > 0.5:
+            pop_burst = max(pop_burst, 0.7)            # limiter -> dut dut
     prev_thr = throttle
 
     # --- tahrik & fizik ---
-    if in_gear:
-        # net motor torku = gaz torku - motor freni (gaz kapaninca surtunme)
+    if running and in_gear:
         eng_tq = throttle * torque(rpm)
         if rpm > IDLE_RPM + 120:
             ebrake = (1.0 - throttle) * EB_TQ * (0.35 + 0.65 * rpm / REDLINE)
@@ -335,7 +374,7 @@ while running:
         if rpm >= REDLINE or shift_timer > 0:
             drive = min(drive, 0.0)   # devir limiti / vites kesintisi
     else:
-        drive = 0.0                   # bos vites: tekerlege guc yok
+        drive = 0.0                   # bos vites / motor kapali
 
     drag = CD * v * v + ROLL_V * v + ROLL0
     accel = (drive - drag) / MASS
@@ -347,16 +386,23 @@ while running:
     if brake > 0 and v < 0.3:
         v = 0.0
 
-    if in_gear:
+    # --- devir guncelle ---
+    if running and in_gear:
         rpm = max(IDLE_RPM, min(rpm_from_speed(v, gear), MAX_RPM))
-    else:
-        # --- bos viteste serbest devir dinamigi (free-rev) ---
+    elif running:
+        # bos viteste serbest devir dinamigi (free-rev)
         net = throttle * torque(rev_rpm) - REV_FR * (rev_rpm - IDLE_RPM)
         if rev_rpm >= REDLINE and throttle > 0.05:
             net = -REV_FR * (rev_rpm - IDLE_RPM)      # devir limiti: yakit kes
-            pop_burst = max(pop_burst, 0.8)           # limiterde pat pat
+            pop_burst = max(pop_burst, 0.8)
         rev_rpm = min(MAX_RPM, max(IDLE_RPM, rev_rpm + net * REV_K * dt))
         rpm = rev_rpm
+
+    # --- rolanti dalgalanmasi (lope): motoru canli gosterir ---
+    if running and throttle < 0.05 and rpm < IDLE_RPM + 220:
+        idle_phase += dt
+        rpm += 13 * math.sin(idle_phase * 6.3) + (np.random.rand() - 0.5) * 8
+
     speed = v * 3.6
 
     # --- HUD ---
@@ -371,8 +417,16 @@ while running:
     screen.blit(font.render(f"VITES: {gtxt}  [{mode}]", True, (255, 255, 255)), (50, 170))
     gcol = (120, 220, 120) if throttle > 0 else ((255, 120, 120) if brake else (255, 255, 255))
     screen.blit(font.render(f"GAZ: %{int(throttle*100)}   SES: {snd}", True, gcol), (50, 235))
+    # motor durumu rozeti
+    if cranking:
+        est, ecol = "MARŞ...", (255, 200, 80)
+    elif engine_on:
+        est, ecol = "● CALISIYOR", (90, 220, 90)
+    else:
+        est, ecol = "○ KAPALI - SPACE ile calistir", (200, 90, 90)
+    screen.blit(pygame.font.SysFont(None, 30).render(est, True, ecol), (360, 48))
     small = pygame.font.SysFont(None, 24)
-    screen.blit(small.render("YUKARI=gaz  SHIFT+YUKARI=TAM GAZ  ASAGI=fren", True, (150, 150, 160)), (50, 290))
+    screen.blit(small.render("SPACE=calistir/durdur  YUKARI=gaz  SHIFT+YUKARI=TAM GAZ  ASAGI=fren", True, (150, 150, 160)), (50, 290))
     screen.blit(small.render("A=oto/manuel  M=motor/egzoz  N=bos vites  SOL/SAG=vites", True, (150, 150, 160)), (50, 312))
     bw = int((rpm - IDLE_RPM) / (MAX_RPM - IDLE_RPM) * (WIDTH - 100))
     pygame.draw.rect(screen, (40, 40, 40), (50, 340, WIDTH - 100, 22))
