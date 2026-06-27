@@ -283,6 +283,22 @@ rev_rpm = IDLE_RPM               # bos viteste serbest motor devri
 crank_t = 0.0                    # mars suresi sayaci
 idle_phase = 0.0                 # rolanti dalgalanma fazi
 
+# performans olcumu & launch control
+LAUNCH_RPM = 3900.0              # launch control devri
+dist = 0.0                       # toplam mesafe (m)
+accel_timer = 0.0                # mevcut hizlanma sayaci
+accel_dist0 = 0.0                # hizlanma baslangic mesafesi
+t100_mark = None                 # bu kosudaki 0-100 suresi
+qmark = None                     # bu kosudaki ceyrek mil suresi
+qtrap = 0.0                      # ceyrek mil cikis hizi
+best_0_100 = None                # en iyi 0-100
+best_qmile = None                # en iyi ceyrek mil (sure, trap)
+timing = False
+launch_rpm = IDLE_RPM            # launch sirasinda tutulan devir
+launch_boost = 0.0              # kalkis sonrasi ekstra tutus zarfi
+was_launching = False
+QMILE = 402.336                  # ceyrek mil (m)
+
 
 def pick_gear(v_ms):
     # hiza uygun en yuksek (rpm < ~5500) vitesi sec
@@ -393,17 +409,34 @@ while running:
     limiter = running and rpm >= REDLINE - 30 and throttle > 0.5
     prev_thr = throttle
 
+    # --- launch control (dur + fren + tam gaz -> devri tut, birak -> firla) ---
+    launching = running and in_gear and v < 0.6 and brake > 0 and throttle > 0.7
+    if launching:
+        launch_rpm = min(LAUNCH_RPM, launch_rpm + 7000 * dt)
+        rpm = launch_rpm                       # debriyaj kayar, devir tutulur
+        limiter = False
+        if launch_rpm > LAUNCH_RPM - 250 and np.random.rand() < 0.30:
+            pop_burst = max(pop_burst, 0.5)    # anti-lag pat pat
+    else:
+        launch_rpm = max(IDLE_RPM, rpm)
+    if was_launching and not launching and throttle > 0.6 and v < 3:
+        launch_boost = 0.9                     # kalkis tutus penceresi
+    was_launching = launching
+    launch_boost = max(0.0, launch_boost - dt)
+
     # --- tahrik & fizik ---
-    if running and in_gear:
+    if running and in_gear and not launching:
         eng_tq = throttle * torque(rpm)
         if rpm > IDLE_RPM + 120:
             ebrake = (1.0 - throttle) * EB_TQ * (0.35 + 0.65 * rpm / REDLINE)
             eng_tq -= ebrake
         drive = eng_tq * gear_ratios[gear] * FINAL * EFF / WHEEL_R
+        if launch_boost > 0:
+            drive *= 1.6                       # launch: ekstra tutus
         if rpm >= REDLINE or shift_timer > 0:
             drive = min(drive, 0.0)   # devir limiti / vites kesintisi
     else:
-        drive = 0.0                   # bos vites / motor kapali
+        drive = 0.0                   # bos vites / motor kapali / launch tutuyor
 
     drag = CD * v * v + ROLL_V * v + ROLL0
     accel = (drive - drag) / MASS
@@ -416,8 +449,12 @@ while running:
         v = 0.0
 
     # --- devir guncelle ---
-    if running and in_gear:
+    if launching:
+        pass                                          # rpm zaten launch_rpm
+    elif running and in_gear:
         rpm = max(IDLE_RPM, min(rpm_from_speed(v, gear), MAX_RPM))
+        if launch_boost > 0:
+            rpm = max(rpm, 2600)                      # kalkista devri tut
     elif running:
         # bos viteste serbest devir dinamigi (free-rev)
         net = throttle * torque(rev_rpm) - REV_FR * (rev_rpm - IDLE_RPM)
@@ -431,6 +468,27 @@ while running:
     if running and throttle < 0.05 and rpm < IDLE_RPM + 220:
         idle_phase += dt
         rpm += 13 * math.sin(idle_phase * 6.3) + (np.random.rand() - 0.5) * 8
+
+    # --- mesafe & performans kronometresi ---
+    dist += v * dt
+    if v < 0.6:
+        timing = False
+        accel_timer = 0.0
+        accel_dist0 = dist
+        t100_mark = None
+        qmark = None
+    elif running:
+        timing = True
+        accel_timer += dt
+        if v * 3.6 >= 100 and t100_mark is None:
+            t100_mark = accel_timer
+            if best_0_100 is None or t100_mark < best_0_100:
+                best_0_100 = t100_mark
+        if (dist - accel_dist0) >= QMILE and qmark is None:
+            qmark = accel_timer
+            qtrap = v * 3.6
+            if best_qmile is None or qmark < best_qmile[0]:
+                best_qmile = (qmark, qtrap)
 
     speed = v * 3.6
 
@@ -454,6 +512,17 @@ while running:
     else:
         est, ecol = "○ KAPALI - SPACE ile calistir", (200, 90, 90)
     screen.blit(pygame.font.SysFont(None, 30).render(est, True, ecol), (360, 48))
+    # performans paneli (sag ust)
+    perf = pygame.font.SysFont(None, 26)
+    if launching:
+        screen.blit(perf.render("LAUNCH CONTROL HAZIR", True, (255, 210, 70)), (360, 95))
+    elif timing:
+        screen.blit(perf.render(f"0-100: {accel_timer:.2f}s" if t100_mark is None
+                                else f"0-100: {t100_mark:.2f}s", True, (120, 220, 255)), (360, 95))
+    b1 = f"EN IYI 0-100: {best_0_100:.2f}s" if best_0_100 else "EN IYI 0-100: --"
+    screen.blit(perf.render(b1, True, (150, 200, 150)), (360, 122))
+    if best_qmile:
+        screen.blit(perf.render(f"1/4 MIL: {best_qmile[0]:.2f}s @ {int(best_qmile[1])}", True, (150, 200, 150)), (360, 146))
     small = pygame.font.SysFont(None, 24)
     screen.blit(small.render("SPACE=calistir/durdur  YUKARI=gaz  SHIFT+YUKARI=TAM GAZ  ASAGI=fren", True, (150, 150, 160)), (50, 290))
     screen.blit(small.render("A=oto/manuel  M=motor/egzoz  N=bos vites  SOL/SAG=vites", True, (150, 150, 160)), (50, 312))
