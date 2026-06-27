@@ -25,6 +25,7 @@ brake = 0.0
 engine_on = False    # motor calisiyor mu
 cranking = False     # mars donuyor mu
 limiter = False      # devir limitine vuruyor mu (sert kesme)
+wheelspin = 0.0      # patinaj miktari (0..1) -> lastik cizirtisi
 
 gear_ratios = {1: 4.71, 2: 3.14, 3: 2.10, 4: 1.67,
                5: 1.29, 6: 1.00, 7: 0.84, 8: 0.67}
@@ -80,6 +81,8 @@ OUT_B, OUT_A = signal.butter(2, 7500 / (SR / 2), btype="low")
 MUF_B, MUF_A = signal.butter(2, 1900 / (SR / 2), btype="low")
 # Blow-off / dump valf "psshh" (genis bantli hava gurultusu)
 BOV_B, BOV_A = signal.butter(2, [1200 / (SR / 2), 6500 / (SR / 2)], btype="band")
+# Lastik cizirtisi (patinaj) - rezonant squeal
+TIRE_B, TIRE_A = rbj_bandpass(680, 8)
 
 # -------------------- Egzoz patlama cekirdekleri --------------------
 # Her "pat" = keskin atak + alt thump + parlak catirti, ustel sonum.
@@ -120,6 +123,8 @@ class Engine:
         self.zi_windL = np.zeros(len(WIND_A) - 1)
         self.zi_windR = np.zeros(len(WIND_A) - 1)
         self.dly_tail = np.zeros(14)        # stereo genislik (Haas) gecikmesi
+        self.zi_tire = np.zeros(len(TIRE_A) - 1)
+        self.tire_ph = 0.0                  # lastik squeal tonu fazi
         self.idx = np.arange(BLOCK)
 
     def callback(self, out, frames, t, status):
@@ -221,6 +226,15 @@ class Engine:
             bn, self.zi_bov = signal.lfilter(BOV_B, BOV_A, bn, zi=self.zi_bov)
             sig += bn * self.bov * (0.7 if exhaust_mode else 0.9)
 
+        # --- lastik cizirtisi (patinaj): rezonant squeal + gurultu ---
+        if wheelspin > 0.02:
+            sf = (560 + 120 * wheelspin) / SR      # patinajla tizlesen squeal
+            sph = self.tire_ph + self.idx * sf
+            self.tire_ph = (self.tire_ph + frames * sf) % 1.0
+            tn, self.zi_tire = signal.lfilter(TIRE_B, TIRE_A, np.random.randn(frames), zi=self.zi_tire)
+            squeal = 0.45 * np.sin(2 * np.pi * sph) + 0.6 * tn
+            sig += squeal * wheelspin * 0.55
+
         # --- mod bogma: MOTOR modunda ekstra lowpass (kabin/mekanik his) ---
         if not exhaust_mode:
             sig, self.zi_muf = signal.lfilter(MUF_B, MUF_A, sig, zi=self.zi_muf)
@@ -276,6 +290,8 @@ MASS = 2075.0                    # kg
 EFF = 0.85                       # aktarma verimi
 CD, ROLL_V, ROLL0 = 0.26, 12.0, 120.0   # drag: CD*v^2 + ROLL_V*v + ROLL0
 EB_TQ = 150.0                    # motor freni torku (Nm), gaz kapali iken
+MU = 1.15                        # lastik tutus katsayisi (quattro AWD, sport)
+GRIP = MU * MASS * 9.81          # max aktarilabilir tahrik kuvveti (N)
 REV_K = 20.0                     # serbest devir ivme katsayisi (bos viteste)
 REV_FR = 0.040                   # motor ic surtunmesi (devir dususu)
 v = 0.0                          # m/s
@@ -433,10 +449,17 @@ while running:
         drive = eng_tq * gear_ratios[gear] * FINAL * EFF / WHEEL_R
         if launch_boost > 0:
             drive *= 1.6                       # launch: ekstra tutus
+        # --- traksiyon limiti: tutus asilirsa patinaj ---
+        if launch_boost == 0 and drive > GRIP and v > 0.3:
+            wheelspin = min(1.0, (drive - GRIP) / GRIP)
+            drive = GRIP + (drive - GRIP) * 0.25   # cogu kuvvet bosa doner
+        else:
+            wheelspin = 0.0
         if rpm >= REDLINE or shift_timer > 0:
             drive = min(drive, 0.0)   # devir limiti / vites kesintisi
     else:
         drive = 0.0                   # bos vites / motor kapali / launch tutuyor
+        wheelspin = 0.0
 
     drag = CD * v * v + ROLL_V * v + ROLL0
     accel = (drive - drag) / MASS
@@ -455,6 +478,8 @@ while running:
         rpm = max(IDLE_RPM, min(rpm_from_speed(v, gear), MAX_RPM))
         if launch_boost > 0:
             rpm = max(rpm, 2600)                      # kalkista devri tut
+        if wheelspin > 0:
+            rpm = min(MAX_RPM, rpm + wheelspin * 1800)  # patinaj devir flare
     elif running:
         # bos viteste serbest devir dinamigi (free-rev)
         net = throttle * torque(rev_rpm) - REV_FR * (rev_rpm - IDLE_RPM)
@@ -504,6 +529,8 @@ while running:
     screen.blit(font.render(f"VITES: {gtxt}  [{mode}]", True, (255, 255, 255)), (50, 170))
     gcol = (120, 220, 120) if throttle > 0 else ((255, 120, 120) if brake else (255, 255, 255))
     screen.blit(font.render(f"GAZ: %{int(throttle*100)}   SES: {snd}", True, gcol), (50, 235))
+    if wheelspin > 0.05:
+        screen.blit(pygame.font.SysFont(None, 30).render("PATINAJ!", True, (255, 160, 40)), (300, 240))
     # motor durumu rozeti
     if cranking:
         est, ecol = "MARŞ...", (255, 200, 80)
