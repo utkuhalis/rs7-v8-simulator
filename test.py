@@ -26,6 +26,7 @@ engine_on = False    # motor calisiyor mu
 cranking = False     # mars donuyor mu
 limiter = False      # devir limitine vuruyor mu (sert kesme)
 wheelspin = 0.0      # patinaj miktari (0..1) -> lastik cizirtisi
+g_smooth = 0.0       # yumusatilmis boyuna G kuvveti (g-metre)
 
 gear_ratios = {1: 4.71, 2: 3.14, 3: 2.10, 4: 1.67,
                5: 1.29, 6: 1.00, 7: 0.84, 8: 0.67}
@@ -392,6 +393,42 @@ def ticks_max_for(ticks, label):
     return 8 if label == "RPM x1000" else 320
 
 
+def draw_shift_lights(cx, y, cur_rpm):
+    # F1 tarzi vites isigi: yesil -> sari -> kirmizi, redline'da yanip soner
+    leds = 12
+    start = 4200.0
+    blink = (pygame.time.get_ticks() // 80) % 2 == 0
+    x0 = cx - (leds - 1) * 18 / 2
+    for i in range(leds):
+        f = i / (leds - 1)
+        thr = start + (REDLINE - start) * f
+        on = cur_rpm >= thr
+        if i < 6:
+            c_on = (60, 220, 70)
+        elif i < 9:
+            c_on = (245, 205, 40)
+        else:
+            c_on = (245, 55, 45)
+        if cur_rpm >= REDLINE:           # tavanda: hepsi kirmizi flash
+            on, c_on = blink, (255, 45, 45)
+        col = c_on if on else (42, 44, 52)
+        pygame.draw.circle(screen, col, (int(x0 + i * 18), y), 6)
+
+
+def draw_gmeter(cx, cy, R, g_long, g_lat=0.0):
+    pygame.draw.circle(screen, (22, 24, 30), (cx, cy), R)
+    pygame.draw.circle(screen, (60, 62, 72), (cx, cy), R, 2)
+    pygame.draw.circle(screen, (48, 50, 60), (cx, cy), int(R * 0.5), 1)
+    pygame.draw.line(screen, (48, 50, 60), (cx - R, cy), (cx + R, cy), 1)
+    pygame.draw.line(screen, (48, 50, 60), (cx, cy - R), (cx, cy + R), 1)
+    sc = R / 1.2                          # 1.2g tam olcek
+    dx = max(-1.2, min(1.2, g_lat)) * sc
+    dy = -max(-1.2, min(1.2, g_long)) * sc
+    pygame.draw.circle(screen, (120, 220, 255), (int(cx + dx), int(cy + dy)), 6)
+    lbl = _f_unit.render(f"{g_long:+.2f}G", True, (150, 152, 160))
+    screen.blit(lbl, (cx - lbl.get_width() / 2, cy + R + 4))
+
+
 # -------------------- Ana dongu --------------------
 running = True
 prev_thr = 0.0
@@ -520,6 +557,9 @@ while running:
     accel = (drive - drag) / MASS
     if brake > 0:
         accel -= 9.5 * brake          # fren ~0.97g
+    # g-metre icin gercek boyuna ivme (durma kelepcesi haric)
+    g_long = accel / 9.81
+    g_smooth += (g_long - g_smooth) * 0.18
     if throttle == 0 and v < 0.4 and brake == 0 and in_gear:
         accel = -v / dt
     v = max(0.0, v + accel * dt)
@@ -576,11 +616,17 @@ while running:
     screen.fill((12, 13, 17))
     over = rpm >= REDLINE
 
+    # vites isigi (ust orta)
+    draw_shift_lights(WIDTH / 2, 100, rpm if running else 0)
+
     # iki analog kadran (devir saati 0-8 x1000, redline 6.8)
     draw_gauge(210, 250, 150, rpm / 8000.0, "RPM x1000",
                f"{int(rpm)}", "1/min", 8, redline_frac=REDLINE / 8000.0)
     draw_gauge(710, 250, 150, speed / 320.0, "HIZ",
                f"{int(speed)}", "km/h", 8)
+
+    # g-metre (orta alt)
+    draw_gmeter(WIDTH / 2, 390, 44, g_smooth)
 
     # orta panel: vites + durum
     gtxt = "N" if gear == 0 else str(gear)
@@ -607,10 +653,10 @@ while running:
     screen.blit(info, (WIDTH / 2 - info.get_width() / 2, 62))
     if wheelspin > 0.05:
         ws = _f_med.render("PATINAJ!", True, (255, 160, 40))
-        screen.blit(ws, (WIDTH / 2 - ws.get_width() / 2, 330))
+        screen.blit(ws, (WIDTH / 2 - ws.get_width() / 2, 128))
     if launching:
         lc = _f_med.render("◉ LAUNCH CONTROL", True, (255, 210, 70))
-        screen.blit(lc, (WIDTH / 2 - lc.get_width() / 2, 330))
+        screen.blit(lc, (WIDTH / 2 - lc.get_width() / 2, 128))
 
     # performans paneli (alt)
     py = 430
