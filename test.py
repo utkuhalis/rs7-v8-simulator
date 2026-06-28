@@ -36,6 +36,7 @@ g_smooth = 0.0       # yumusatilmis boyuna G kuvveti (g-metre)
 g_lat_smooth = 0.0   # yumusatilmis yanal G (viraj)
 steer = 0.0          # direksiyon (-1..1)
 drifting = False     # kayma / drift durumu
+wheel_ang = 0.0      # tekerlek donme acisi (animasyon)
 driveby = False      # yanindan gecis (drive-by) animasyonu
 db_x = 0.0           # sanal arac konumu (m)
 doppler = 1.0        # doppler frekans carpani
@@ -522,6 +523,52 @@ def draw_shift_lights(cx, y, cur_rpm):
         pygame.draw.circle(screen, col, (int(x0 + i * 18), y), 6)
 
 
+def draw_car(cx, cy, flame_amt, spin, drift, wheel_ang):
+    # Yandan RS7 sportback silueti (one sага bakar), arkada egzoz
+    t = pygame.time.get_ticks()
+    # --- duman (patinaj/drift) ---
+    if spin > 0.25 or drift:
+        smoke = pygame.Surface((150, 90), pygame.SRCALPHA)
+        n = int(4 + 8 * min(1.0, spin + (0.6 if drift else 0)))
+        for i in range(n):
+            sx = 20 + (i * 17 + t // 40) % 130
+            sy = 60 - (i * 9 + t // 30) % 55
+            rad = 8 + (i * 5 % 16)
+            al = max(20, 120 - sx)
+            pygame.draw.circle(smoke, (180, 180, 185, al), (int(sx), int(sy)), rad)
+        screen.blit(smoke, (cx - 145, cy - 40))
+    # --- govde ---
+    body = [(cx - 90, cy + 15), (cx - 96, cy + 2), (cx - 66, cy - 1),
+            (cx - 40, cy - 20), (cx + 22, cy - 22), (cx + 62, cy - 3),
+            (cx + 94, cy + 1), (cx + 92, cy + 15)]
+    pygame.draw.polygon(screen, (190, 30, 35), body)          # RS kirmizi
+    pygame.draw.polygon(screen, (120, 18, 22), body, 2)
+    # cam
+    win = [(cx - 34, cy - 17), (cx + 16, cy - 18), (cx + 44, cy - 3), (cx - 38, cy - 2)]
+    pygame.draw.polygon(screen, (40, 50, 60), win)
+    # --- tekerlekler (donen jant) ---
+    for wx in (cx - 55, cx + 55):
+        pygame.draw.circle(screen, (25, 25, 28), (wx, cy + 15), 17)
+        pygame.draw.circle(screen, (90, 92, 100), (wx, cy + 15), 17, 2)
+        for k in range(4):
+            a = wheel_ang + k * math.pi / 2
+            pygame.draw.line(screen, (160, 162, 170), (wx, cy + 15),
+                             (wx + math.cos(a) * 13, cy + 15 + math.sin(a) * 13), 2)
+    # --- egzoz uclari (arka sol) ---
+    ex, ey = cx - 96, cy + 9
+    pygame.draw.rect(screen, (40, 40, 45), (ex - 4, ey - 3, 6, 6))
+    pygame.draw.rect(screen, (40, 40, 45), (ex - 4, ey + 5, 6, 6))
+    # --- alev (BANG) ---
+    if flame_amt > 0.05:
+        flick = 0.7 + 0.3 * ((t // 30) % 2)
+        flen = (18 + flame_amt * 55) * flick
+        for ofy in (0, 8):
+            pygame.draw.polygon(screen, (255, 140, 30),
+                                [(ex - 3, ey + ofy - 4), (ex - flen, ey + ofy + 1), (ex - 3, ey + ofy + 5)])
+            pygame.draw.polygon(screen, (255, 230, 90),
+                                [(ex - 3, ey + ofy - 2), (ex - flen * 0.55, ey + ofy + 1), (ex - 3, ey + ofy + 4)])
+
+
 def draw_gmeter(cx, cy, R, g_long, g_lat=0.0):
     pygame.draw.circle(screen, (22, 24, 30), (cx, cy), R)
     pygame.draw.circle(screen, (60, 62, 72), (cx, cy), R, 2)
@@ -825,6 +872,10 @@ while running:
 
     # g-metre (orta alt) - boyuna + yanal
     draw_gmeter(WIDTH / 2, 390, 44, g_smooth, g_lat_smooth)
+
+    # yan gorunum arac (sag alt) - donen teker, alev, duman
+    wheel_ang += (v / TIRE_CIRC) * dt * 6.0
+    draw_car(710, 470, flame, wheelspin, drifting, wheel_ang)
 
     # orta panel: vites + durum
     gtxt = "N" if gear == 0 else str(gear)
