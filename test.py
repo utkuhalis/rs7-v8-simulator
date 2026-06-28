@@ -1,8 +1,12 @@
+import json
 import math
+import os
 import numpy as np
 import pygame
 import sounddevice as sd
 from scipy import signal
+
+BEST_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rs7_bests.json")
 
 pygame.init()
 
@@ -43,6 +47,8 @@ drag_t = 0.0         # christmas tree zamani
 drag_gone = False    # yesil yandi mi
 drag_foul = False    # erken kalkis (foul)
 drag_react = None    # tepki suresi (s)
+fuel = 1.0           # yakit (0..1)
+coolant = 0.45       # motor sogutma sivisi sicakligi (0..1)
 telem_rpm, telem_spd, telem_g = [], [], []   # telemetri gecmisi
 driveby = False      # yanindan gecis (drive-by) animasyonu
 db_x = 0.0           # sanal arac konumu (m)
@@ -422,6 +428,27 @@ qmark = None                     # bu kosudaki ceyrek mil suresi
 qtrap = 0.0                      # ceyrek mil cikis hizi
 best_0_100 = None                # en iyi 0-100
 best_qmile = None                # en iyi ceyrek mil (sure, trap)
+
+
+def load_bests():
+    try:
+        with open(BEST_FILE) as f:
+            d = json.load(f)
+        q = tuple(d["best_qmile"]) if d.get("best_qmile") else None
+        return d.get("best_0_100"), q
+    except Exception:
+        return None, None
+
+
+def save_bests():
+    try:
+        with open(BEST_FILE, "w") as f:
+            json.dump({"best_0_100": best_0_100, "best_qmile": best_qmile}, f)
+    except Exception:
+        pass
+
+
+best_0_100, best_qmile = load_bests()   # onceki rekorlari yukle
 timing = False
 launch_rpm = IDLE_RPM            # launch sirasinda tutulan devir
 launch_boost = 0.0              # kalkis sonrasi ekstra tutus zarfi
@@ -660,8 +687,8 @@ while running:
                     dying = True
                     die_t = 0.0
                     dying_rpm0 = max(rpm, IDLE_RPM)
-                elif not engine_on and not cranking and not dying:
-                    cranking = True                   # marsi baslat
+                elif not engine_on and not cranking and not dying and fuel > 0.02:
+                    cranking = True                   # marsi baslat (yakit varsa)
                     crank_t = 0.0
             elif e.key == pygame.K_a:
                 auto = not auto                       # A = oto/manuel
@@ -676,6 +703,8 @@ while running:
                 db_x = -240.0
             elif e.key == pygame.K_c:
                 theme_idx = (theme_idx + 1) % len(THEMES)  # C = renk temasi
+            elif e.key == pygame.K_f:
+                fuel = 1.0                            # F = yakit doldur
             elif e.key == pygame.K_g:                 # G = drag yarisi (christmas tree)
                 if not drag_active and v < 1.5:
                     drag_active = True
@@ -886,6 +915,18 @@ while running:
 
     flame = max(0.0, flame - dt * 4.0)        # alev parlamasi sonumu
 
+    # --- yakit tuketimi + sogutma sicakligi ---
+    if eng_run:
+        fuel = max(0.0, fuel - (0.0004 + 0.004 * throttle * (0.3 + 0.7 * rpm / MAX_RPM)) * dt)
+        if fuel <= 0.0 and not dying:         # yakit bitti -> motor durur
+            engine_on = False
+            dying = True
+            die_t = 0.0
+            dying_rpm0 = max(rpm, IDLE_RPM)
+    ctarget = 0.40 + 0.45 * (rpm / MAX_RPM) + 0.15 * throttle - 0.0009 * speed
+    coolant += (max(0.2, min(1.0, ctarget)) - coolant) * (0.02 if eng_run else 0.01)
+    coolant = max(0.2, min(1.0, coolant))
+
     # --- drag yarisi: christmas tree + tepki suresi ---
     if drag_active:
         drag_t += dt
@@ -928,11 +969,13 @@ while running:
             t100_mark = accel_timer
             if best_0_100 is None or t100_mark < best_0_100:
                 best_0_100 = t100_mark
+                save_bests()
         if (dist - accel_dist0) >= QMILE and qmark is None:
             qmark = accel_timer
             qtrap = v * 3.6
             if best_qmile is None or qmark < best_qmile[0]:
                 best_qmile = (qmark, qtrap)
+                save_bests()
 
     speed = v * 3.6
 
@@ -1011,6 +1054,22 @@ while running:
     scol = [(160, 200, 160), (255, 210, 90), (255, 150, 60), (255, 70, 60)][stage]
     st_txt = f"{STAGE_NAMES[stage]} • ~{STAGE_HP[stage]} hp"
     screen.blit(_f_med.render(st_txt, True, scol), (40, 30))
+
+    # yakit + sicaklik barlari (sag ust)
+    def bar(bx, by, val, lo_col, hi_col, label):
+        pygame.draw.rect(screen, (35, 36, 42), (bx, by, 150, 12))
+        c = hi_col if val > 0.85 else (lo_col if val > 0.2 else (255, 70, 60))
+        pygame.draw.rect(screen, c, (bx, by, int(150 * val), 12))
+        pygame.draw.rect(screen, (60, 62, 70), (bx, by, 150, 12), 1)
+        screen.blit(_f_unit.render(label, True, (150, 152, 160)), (bx - 42, by - 2))
+    bar(WIDTH - 170, 30, fuel, (90, 200, 110), (90, 200, 110), "YKT")
+    bar(WIDTH - 170, 50, coolant, (90, 160, 255), (255, 90, 60), "ISI")
+    if fuel <= 0.02:
+        fo = _f_unit.render("YAKIT BITTI! (F)", True, (255, 80, 60))
+        screen.blit(fo, (WIDTH - 170, 66))
+    elif coolant > 0.92:
+        fo = _f_unit.render("ASIRI ISINMA!", True, (255, 120, 50))
+        screen.blit(fo, (WIDTH - 170, 66))
     if flame > 0.15:
         fb = _f_med.render("🔥 BANG", True, (255, int(120 + 100 * flame), 40))
         screen.blit(fb, (WIDTH / 2 - fb.get_width() / 2, 128))
@@ -1041,7 +1100,7 @@ while running:
     # kontrol ipuclari (alt)
     screen.blit(_f_small.render("SPACE calistir • ↑ gaz • SHIFT+↑ tam gaz • ↓ fren • ←/→ direksiyon • B el freni • G drag yarisi",
                                 True, (110, 112, 122)), (40, HEIGHT - 46))
-    screen.blit(_f_small.render("A oto/manuel • M ses • T stage • R ortam • C tema • D drive-by • N bos • Z/X vites",
+    screen.blit(_f_small.render("A oto/manuel • M ses • T stage • R ortam • C tema • D drive-by • F yakit • N bos • Z/X vites",
                                 True, (110, 112, 122)), (40, HEIGHT - 24))
     pygame.display.flip()
 
