@@ -500,6 +500,8 @@ def draw_gmeter(cx, cy, R, g_long, g_lat=0.0):
 # -------------------- Ana dongu --------------------
 running = True
 prev_thr = 0.0
+prev_gear = gear      # vites degisimi tespiti (rev-match blip)
+blip = 0.0            # asagi viteste gaz vurma flare
 shift_timer = 0.0     # vites degisiminde kisa tork kesme
 while running:
     dt = min(clock.tick(60) / 1000.0, 0.05)
@@ -605,6 +607,13 @@ while running:
             pop_burst = 1.0                            # gaz birakma -> pat pat
         if prev_thr > 0.55 and throttle < 0.3 and rpm > 2400:
             bov_burst = 1.0                            # boost altinda lift -> psshh
+    # --- asagi vites rev-match: gaz vurma blip + bang ---
+    if eng_run and 0 < gear < prev_gear and v > 2.0:
+        blip = 1.0
+        pop_burst = max(pop_burst, 0.7)            # rev-match bang
+        bov_burst = max(bov_burst, 0.35)
+    prev_gear = gear
+
     # rev-limiter sert kesme (gaz tam + devir tavanda)
     limiter = eng_run and rpm >= REDLINE - 30 and throttle > 0.5
     prev_thr = throttle
@@ -688,6 +697,13 @@ while running:
         rpm += start_flare * 550
     else:
         start_flare = 0.0
+
+    # --- asagi vites gaz vurma (rev-match) flare ---
+    if blip > 0.01:
+        blip *= 0.82
+        rpm = min(MAX_RPM, rpm + blip * 450)
+    else:
+        blip = 0.0
 
     flame = max(0.0, flame - dt * 4.0)        # alev parlamasi sonumu
 
