@@ -473,7 +473,7 @@ while running:
     brake = 1.0 if keys[pygame.K_DOWN] else 0.0
 
     in_gear = gear != 0
-    running = engine_on and not cranking
+    eng_run = engine_on and not cranking
 
     # --- ates / devir durumu ---
     if cranking:
@@ -483,7 +483,7 @@ while running:
         if crank_t > 0.75:                             # motor tutuştu
             cranking = False
             engine_on = True
-            running = True
+            eng_run = True
             pop_burst = 0.5                            # calisirken hafif blip
     elif not engine_on:
         rpm = 0.0
@@ -495,7 +495,7 @@ while running:
         rpm = rev_rpm                                  # bos vites: serbest devir
 
     # --- otomatik vites (sadece calisirken & viteste) ---
-    if running and auto and in_gear and shift_timer <= 0:
+    if eng_run and auto and in_gear and shift_timer <= 0:
         if gear < 8 and rpm > 6550 and throttle > 0.05:
             gear += 1
             shift_timer = 0.12
@@ -508,17 +508,17 @@ while running:
     shift_timer = max(0.0, shift_timer - dt)
 
     # --- egzoz patlamasi & blow-off tetikleyicileri ---
-    if running:
+    if eng_run:
         if prev_thr > 0.45 and throttle < 0.2 and rpm > 2600:
             pop_burst = 1.0                            # gaz birakma -> pat pat
         if prev_thr > 0.55 and throttle < 0.3 and rpm > 2400:
             bov_burst = 1.0                            # boost altinda lift -> psshh
     # rev-limiter sert kesme (gaz tam + devir tavanda)
-    limiter = running and rpm >= REDLINE - 30 and throttle > 0.5
+    limiter = eng_run and rpm >= REDLINE - 30 and throttle > 0.5
     prev_thr = throttle
 
     # --- launch control (dur + fren + tam gaz -> devri tut, birak -> firla) ---
-    launching = running and in_gear and v < 0.6 and brake > 0 and throttle > 0.7
+    launching = eng_run and in_gear and v < 0.6 and brake > 0 and throttle > 0.7
     if launching:
         launch_rpm = min(LAUNCH_RPM, launch_rpm + 7000 * dt)
         rpm = launch_rpm                       # debriyaj kayar, devir tutulur
@@ -533,7 +533,7 @@ while running:
     launch_boost = max(0.0, launch_boost - dt)
 
     # --- tahrik & fizik ---
-    if running and in_gear and not launching:
+    if eng_run and in_gear and not launching:
         eng_tq = throttle * torque(rpm)
         if rpm > IDLE_RPM + 120:
             ebrake = (1.0 - throttle) * EB_TQ * (0.35 + 0.65 * rpm / REDLINE)
@@ -569,13 +569,13 @@ while running:
     # --- devir guncelle ---
     if launching:
         pass                                          # rpm zaten launch_rpm
-    elif running and in_gear:
+    elif eng_run and in_gear:
         rpm = max(IDLE_RPM, min(rpm_from_speed(v, gear), MAX_RPM))
         if launch_boost > 0:
             rpm = max(rpm, 2600)                      # kalkista devri tut
         if wheelspin > 0:
             rpm = min(MAX_RPM, rpm + wheelspin * 1800)  # patinaj devir flare
-    elif running:
+    elif eng_run:
         # bos viteste serbest devir dinamigi (free-rev)
         net = throttle * torque(rev_rpm) - REV_FR * (rev_rpm - IDLE_RPM)
         if rev_rpm >= REDLINE and throttle > 0.05:
@@ -585,7 +585,7 @@ while running:
         rpm = rev_rpm
 
     # --- rolanti dalgalanmasi (lope): motoru canli gosterir ---
-    if running and throttle < 0.05 and rpm < IDLE_RPM + 220:
+    if eng_run and throttle < 0.05 and rpm < IDLE_RPM + 220:
         idle_phase += dt
         rpm += 13 * math.sin(idle_phase * 6.3) + (np.random.rand() - 0.5) * 8
 
@@ -597,7 +597,7 @@ while running:
         accel_dist0 = dist
         t100_mark = None
         qmark = None
-    elif running:
+    elif eng_run:
         timing = True
         accel_timer += dt
         if v * 3.6 >= 100 and t100_mark is None:
@@ -617,7 +617,7 @@ while running:
     over = rpm >= REDLINE
 
     # vites isigi (ust orta)
-    draw_shift_lights(WIDTH / 2, 100, rpm if running else 0)
+    draw_shift_lights(WIDTH / 2, 100, rpm if eng_run else 0)
 
     # iki analog kadran (devir saati 0-8 x1000, redline 6.8)
     draw_gauge(210, 250, 150, rpm / 8000.0, "RPM x1000",
@@ -630,7 +630,7 @@ while running:
 
     # orta panel: vites + durum
     gtxt = "N" if gear == 0 else str(gear)
-    gear_col = (90, 220, 90) if running else (110, 110, 120)
+    gear_col = (90, 220, 90) if eng_run else (110, 110, 120)
     gsurf = pygame.font.SysFont("Arial", 110, bold=True).render(gtxt, True, gear_col)
     screen.blit(gsurf, (WIDTH / 2 - gsurf.get_width() / 2, 175))
     mode = "OTO" if auto else "MANUEL"
