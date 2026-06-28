@@ -33,6 +33,9 @@ engine_level = 0.0   # ses seviyesi zarfi (mars/sonme gecisleri)
 limiter = False      # devir limitine vuruyor mu (sert kesme)
 wheelspin = 0.0      # patinaj miktari (0..1) -> lastik cizirtisi
 g_smooth = 0.0       # yumusatilmis boyuna G kuvveti (g-metre)
+g_lat_smooth = 0.0   # yumusatilmis yanal G (viraj)
+steer = 0.0          # direksiyon (-1..1)
+drifting = False     # kayma / drift durumu
 flame = 0.0          # egzoz alevi parlamasi (0..1), BANG'de tetiklenir
 stage = 0            # 0=STOCK, 1/2/3 = ECU tuning stage
 STAGE_MUL = [1.0, 1.22, 1.42, 1.65]            # tork carpani
@@ -530,10 +533,10 @@ while running:
             elif pygame.K_1 <= e.key <= pygame.K_8:
                 gear = e.key - pygame.K_0             # vitese tak (N'den de cikar)
                 auto = False
-            elif not auto and e.key == pygame.K_RIGHT and gear < 8:
-                gear = max(1, gear + 1)
-            elif not auto and e.key == pygame.K_LEFT and gear > 1:
-                gear -= 1
+            elif not auto and e.key == pygame.K_x and gear < 8:
+                gear = max(1, gear + 1)               # X = yukari vites
+            elif not auto and e.key == pygame.K_z and gear > 1:
+                gear -= 1                             # Z = asagi vites
 
     keys = pygame.key.get_pressed()
     # YUKARI = kismi gaz (feather edebilirsin), SHIFT+YUKARI = TAM GAZ
@@ -667,6 +670,25 @@ while running:
     if brake > 0 and v < 0.3:
         v = 0.0
 
+    # --- direksiyon + yanal G + drift ---
+    sdir = (1 if keys[pygame.K_RIGHT] else 0) - (1 if keys[pygame.K_LEFT] else 0)
+    steer += (sdir - steer) * 0.12
+    handbrake = keys[pygame.K_b]
+    spd_kmh = v * 3.6
+    lat_cap = max(0.0, min(1.0, spd_kmh / 55.0))      # hiz olmadan viraj olmaz
+    g_lat = steer * lat_cap * 1.05
+    total_g = math.hypot(g_smooth, g_lat)
+    drifting = eng_run and (total_g > MU * 0.95 or (handbrake and spd_kmh > 18))
+    if handbrake and spd_kmh > 12:
+        g_lat *= 1.5                                  # el freni -> arka kayar
+        v = max(0.0, v - 7.0 * dt)                    # el freni yavaslatir
+        wheelspin = max(wheelspin, 0.7)
+    if drifting:
+        wheelspin = max(wheelspin, min(1.0, abs(g_lat) * 0.6 + 0.3))
+        v = max(0.0, v - abs(g_lat) * 2.2 * dt)       # kaymada hiz kaybi
+    v = max(0.0, v - abs(g_lat) * 1.2 * dt)           # viraj surtunmesi
+    g_lat_smooth += (g_lat - g_lat_smooth) * 0.20
+
     # --- devir guncelle ---
     if launching:
         pass                                          # rpm zaten launch_rpm
@@ -743,8 +765,8 @@ while running:
     draw_gauge(710, 250, 150, speed / 320.0, "HIZ",
                f"{int(speed)}", "km/h", 8)
 
-    # g-metre (orta alt)
-    draw_gmeter(WIDTH / 2, 390, 44, g_smooth)
+    # g-metre (orta alt) - boyuna + yanal
+    draw_gmeter(WIDTH / 2, 390, 44, g_smooth, g_lat_smooth)
 
     # orta panel: vites + durum
     gtxt = "N" if gear == 0 else str(gear)
@@ -780,9 +802,12 @@ while running:
     if flame > 0.15:
         fb = _f_med.render("🔥 BANG", True, (255, int(120 + 100 * flame), 40))
         screen.blit(fb, (WIDTH / 2 - fb.get_width() / 2, 128))
-    if wheelspin > 0.05:
+    if drifting:
+        dr = _f_med.render("DRIFT!", True, (255, 90, 200))
+        screen.blit(dr, (WIDTH / 2 - dr.get_width() / 2, 152))
+    elif wheelspin > 0.05:
         ws = _f_med.render("PATINAJ!", True, (255, 160, 40))
-        screen.blit(ws, (WIDTH / 2 - ws.get_width() / 2, 128))
+        screen.blit(ws, (WIDTH / 2 - ws.get_width() / 2, 152))
     if launching:
         lc = _f_med.render("◉ LAUNCH CONTROL", True, (255, 210, 70))
         screen.blit(lc, (WIDTH / 2 - lc.get_width() / 2, 128))
@@ -799,9 +824,9 @@ while running:
                                     True, (150, 200, 150)), (40, py + 50))
 
     # kontrol ipuclari (alt)
-    screen.blit(_f_small.render("SPACE calistir  •  ↑ gaz  •  SHIFT+↑ tam gaz  •  ↓ fren  •  N bos",
+    screen.blit(_f_small.render("SPACE calistir  •  ↑ gaz  •  SHIFT+↑ tam gaz  •  ↓ fren  •  ←/→ direksiyon  •  B el freni",
                                 True, (110, 112, 122)), (40, HEIGHT - 46))
-    screen.blit(_f_small.render("A oto/manuel  •  M motor/egzoz  •  T stage (tuning)  •  ←/→ vites  •  1-8 vites",
+    screen.blit(_f_small.render("A oto/manuel  •  M motor/egzoz  •  T stage  •  N bos  •  Z/X vites  •  1-8 vites",
                                 True, (110, 112, 122)), (40, HEIGHT - 24))
     pygame.display.flip()
 
