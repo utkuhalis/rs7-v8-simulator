@@ -37,6 +37,7 @@ g_lat_smooth = 0.0   # yumusatilmis yanal G (viraj)
 steer = 0.0          # direksiyon (-1..1)
 drifting = False     # kayma / drift durumu
 wheel_ang = 0.0      # tekerlek donme acisi (animasyon)
+theme_idx = 0        # renk temasi (skin)
 telem_rpm, telem_spd, telem_g = [], [], []   # telemetri gecmisi
 driveby = False      # yanindan gecis (drive-by) animasyonu
 db_x = 0.0           # sanal arac konumu (m)
@@ -454,6 +455,19 @@ _f_big = pygame.font.SysFont("Arial", 40, bold=True)
 _f_unit = pygame.font.SysFont("Arial", 16)
 GA0, GA1 = math.radians(135), math.radians(135 + 270)   # gauge yay araligi
 
+# -------------------- Temalar (skin) --------------------
+THEMES = [
+    {"name": "KIRMIZI", "bg": (12, 13, 17), "accent": (255, 65, 55),
+     "car": (190, 30, 35), "trim": (120, 18, 22), "gtext": (250, 215, 215)},
+    {"name": "NARDO",   "bg": (26, 27, 30), "accent": (235, 235, 240),
+     "car": (150, 152, 158), "trim": (90, 92, 98), "gtext": (245, 246, 250)},
+    {"name": "MAVI",    "bg": (9, 13, 22), "accent": (80, 150, 255),
+     "car": (30, 90, 200), "trim": (20, 50, 120), "gtext": (210, 228, 255)},
+    {"name": "YESIL",   "bg": (9, 18, 12), "accent": (80, 220, 120),
+     "car": (40, 150, 70), "trim": (20, 80, 40), "gtext": (215, 255, 225)},
+]
+THEME = THEMES[0]
+
 
 def draw_gauge(cx, cy, R, frac, label, value_text, unit, ticks, redline_frac=None):
     frac = max(0.0, min(1.0, frac))
@@ -484,14 +498,14 @@ def draw_gauge(cx, cy, R, frac, label, value_text, unit, ticks, redline_frac=Non
     # ibre
     a = GA0 + (GA1 - GA0) * frac
     ca, sa = math.cos(a), math.sin(a)
-    pygame.draw.line(screen, (255, 70, 60), (cx - ca * 14, cy - sa * 14),
+    pygame.draw.line(screen, THEME["accent"], (cx - ca * 14, cy - sa * 14),
                      (cx + ca * (R - 26), cy + sa * (R - 26)), 4)
     pygame.draw.circle(screen, (210, 210, 220), (cx, cy), 8)
     pygame.draw.circle(screen, (40, 40, 48), (cx, cy), 4)
     # yazilar (gobekle cakismayacak sekilde)
     lbl = _f_unit.render(label, True, (150, 152, 160))
     screen.blit(lbl, (cx - lbl.get_width() / 2, cy - R * 0.52))
-    val = _f_big.render(value_text, True, (240, 242, 250))
+    val = _f_big.render(value_text, True, THEME["gtext"])
     screen.blit(val, (cx - val.get_width() / 2, cy + R * 0.22))
     un = _f_unit.render(unit, True, (150, 152, 160))
     screen.blit(un, (cx - un.get_width() / 2, cy + R * 0.50))
@@ -542,8 +556,8 @@ def draw_car(cx, cy, flame_amt, spin, drift, wheel_ang):
     body = [(cx - 90, cy + 15), (cx - 96, cy + 2), (cx - 66, cy - 1),
             (cx - 40, cy - 20), (cx + 22, cy - 22), (cx + 62, cy - 3),
             (cx + 94, cy + 1), (cx + 92, cy + 15)]
-    pygame.draw.polygon(screen, (190, 30, 35), body)          # RS kirmizi
-    pygame.draw.polygon(screen, (120, 18, 22), body, 2)
+    pygame.draw.polygon(screen, THEME["car"], body)           # tema rengi
+    pygame.draw.polygon(screen, THEME["trim"], body, 2)
     # cam
     win = [(cx - 34, cy - 17), (cx + 16, cy - 18), (cx + 44, cy - 3), (cx - 38, cy - 2)]
     pygame.draw.polygon(screen, (40, 50, 60), win)
@@ -640,6 +654,8 @@ while running:
             elif e.key == pygame.K_d and not driveby:
                 driveby = True                        # D = yanindan gecis (drive-by)
                 db_x = -240.0
+            elif e.key == pygame.K_c:
+                theme_idx = (theme_idx + 1) % len(THEMES)  # C = renk temasi
             elif e.key == pygame.K_n:
                 gear = 0 if gear != 0 else pick_gear(v)   # N = bos vites
             elif pygame.K_1 <= e.key <= pygame.K_8:
@@ -882,7 +898,8 @@ while running:
     speed = v * 3.6
 
     # --- HUD: Audi Virtual Cockpit tarzi ---
-    screen.fill((12, 13, 17))
+    THEME = THEMES[theme_idx]
+    screen.fill(THEME["bg"])
     over = rpm >= REDLINE
 
     # vites isigi (ust orta)
@@ -937,7 +954,7 @@ while running:
     # gaz/fren/ses durumu (orta)
     snd = "EGZOZ" if exhaust_mode else "MOTOR"
     env_nm = BlockReverb.ENV_NAMES[reverb.env]
-    info = _f_small.render(f"GAZ %{int(throttle*100)}   SES: {snd}   ORTAM: {env_nm}", True, (170, 172, 182))
+    info = _f_small.render(f"SES: {snd}   ORTAM: {env_nm}   TEMA: {THEME['name']}", True, (170, 172, 182))
     screen.blit(info, (WIDTH / 2 - info.get_width() / 2, 62))
     # stage rozeti (sol ust)
     scol = [(160, 200, 160), (255, 210, 90), (255, 150, 60), (255, 70, 60)][stage]
@@ -973,7 +990,7 @@ while running:
     # kontrol ipuclari (alt)
     screen.blit(_f_small.render("SPACE calistir  •  ↑ gaz  •  SHIFT+↑ tam gaz  •  ↓ fren  •  ←/→ direksiyon  •  B el freni",
                                 True, (110, 112, 122)), (40, HEIGHT - 46))
-    screen.blit(_f_small.render("A oto/manuel  •  M motor/egzoz  •  T stage  •  R ortam  •  D drive-by  •  N bos  •  Z/X vites",
+    screen.blit(_f_small.render("A oto/manuel • M ses • T stage • R ortam • C tema • D drive-by • N bos • Z/X vites",
                                 True, (110, 112, 122)), (40, HEIGHT - 24))
     pygame.display.flip()
 
