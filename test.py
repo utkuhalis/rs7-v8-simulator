@@ -6,7 +6,7 @@ from scipy import signal
 
 pygame.init()
 
-WIDTH, HEIGHT = 920, 560
+WIDTH, HEIGHT = 920, 660
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("Audi RS7 4.0 TFSI V8 Biturbo")
 font = pygame.font.SysFont(None, 48)
@@ -37,6 +37,7 @@ g_lat_smooth = 0.0   # yumusatilmis yanal G (viraj)
 steer = 0.0          # direksiyon (-1..1)
 drifting = False     # kayma / drift durumu
 wheel_ang = 0.0      # tekerlek donme acisi (animasyon)
+telem_rpm, telem_spd, telem_g = [], [], []   # telemetri gecmisi
 driveby = False      # yanindan gecis (drive-by) animasyonu
 db_x = 0.0           # sanal arac konumu (m)
 doppler = 1.0        # doppler frekans carpani
@@ -569,6 +570,29 @@ def draw_car(cx, cy, flame_amt, spin, drift, wheel_ang):
                                 [(ex - 3, ey + ofy - 2), (ex - flen * 0.55, ey + ofy + 1), (ex - 3, ey + ofy + 4)])
 
 
+def draw_telemetry(x, y, w, h):
+    pygame.draw.rect(screen, (16, 17, 22), (x, y, w, h))
+    pygame.draw.rect(screen, (45, 47, 55), (x, y, w, h), 1)
+    pygame.draw.line(screen, (38, 40, 48), (x, y + h / 2), (x + w, y + h / 2), 1)
+
+    def plot(data, col):
+        if len(data) < 2:
+            return
+        n = len(data)
+        step = w / (w - 1)
+        pts = [(x + i * step, y + h - max(0.0, min(1.0, val)) * h)
+               for i, val in enumerate(data)]
+        pygame.draw.lines(screen, col, False, pts, 2)
+
+    plot(telem_rpm, (255, 80, 70))     # devir
+    plot(telem_spd, (90, 180, 255))    # hiz
+    plot(telem_g, (110, 220, 120))     # G
+    screen.blit(_f_unit.render("RPM", True, (255, 80, 70)), (x + 8, y + 4))
+    screen.blit(_f_unit.render("HIZ", True, (90, 180, 255)), (x + 54, y + 4))
+    screen.blit(_f_unit.render("G", True, (110, 220, 120)), (x + 100, y + 4))
+    screen.blit(_f_unit.render("TELEMETRI", True, (110, 112, 122)), (x + w - 90, y + 4))
+
+
 def draw_gmeter(cx, cy, R, g_long, g_lat=0.0):
     pygame.draw.circle(screen, (22, 24, 30), (cx, cy), R)
     pygame.draw.circle(screen, (60, 62, 72), (cx, cy), R, 2)
@@ -876,6 +900,16 @@ while running:
     # yan gorunum arac (sag alt) - donen teker, alev, duman
     wheel_ang += (v / TIRE_CIRC) * dt * 6.0
     draw_car(710, 470, flame, wheelspin, drifting, wheel_ang)
+
+    # telemetri grafigi (alt serit)
+    TW = WIDTH - 80
+    telem_rpm.append(rpm / MAX_RPM)
+    telem_spd.append(speed / 320.0)
+    telem_g.append((g_smooth + 1.5) / 3.0)
+    for buf in (telem_rpm, telem_spd, telem_g):
+        if len(buf) > TW:
+            del buf[0]
+    draw_telemetry(40, 505, TW, 78)
 
     # orta panel: vites + durum
     gtxt = "N" if gear == 0 else str(gear)
