@@ -38,6 +38,11 @@ steer = 0.0          # direksiyon (-1..1)
 drifting = False     # kayma / drift durumu
 wheel_ang = 0.0      # tekerlek donme acisi (animasyon)
 theme_idx = 0        # renk temasi (skin)
+drag_active = False  # drag yarisi modu
+drag_t = 0.0         # christmas tree zamani
+drag_gone = False    # yesil yandi mi
+drag_foul = False    # erken kalkis (foul)
+drag_react = None    # tepki suresi (s)
 telem_rpm, telem_spd, telem_g = [], [], []   # telemetri gecmisi
 driveby = False      # yanindan gecis (drive-by) animasyonu
 db_x = 0.0           # sanal arac konumu (m)
@@ -584,6 +589,21 @@ def draw_car(cx, cy, flame_amt, spin, drift, wheel_ang):
                                 [(ex - 3, ey + ofy - 2), (ex - flen * 0.55, ey + ofy + 1), (ex - 3, ey + ofy + 4)])
 
 
+def draw_tree(cx, y0, drag_t, gone, foul):
+    # Sportsman christmas tree (drag yarisi baslangic isiklari)
+    def bulb(yy, on, col):
+        pygame.draw.circle(screen, (28, 28, 32), (cx, int(yy)), 15)
+        pygame.draw.circle(screen, col if on else (48, 48, 54), (cx, int(yy)), 11)
+        pygame.draw.circle(screen, (70, 70, 78), (cx, int(yy)), 15, 1)
+    bulb(y0, drag_t > 0.2, (120, 160, 255))            # pre-stage
+    bulb(y0 + 30, drag_t > 0.5, (120, 160, 255))       # stage
+    bulb(y0 + 70, drag_t >= 1.0, (255, 180, 30))       # amber 1
+    bulb(y0 + 104, drag_t >= 1.4, (255, 180, 30))      # amber 2
+    bulb(y0 + 138, drag_t >= 1.8, (255, 180, 30))      # amber 3
+    bulb(y0 + 180, gone and not foul, (60, 230, 80))   # GREEN
+    bulb(y0 + 214, foul, (255, 50, 40))                # foul (kirmizi)
+
+
 def draw_telemetry(x, y, w, h):
     pygame.draw.rect(screen, (16, 17, 22), (x, y, w, h))
     pygame.draw.rect(screen, (45, 47, 55), (x, y, w, h), 1)
@@ -656,6 +676,15 @@ while running:
                 db_x = -240.0
             elif e.key == pygame.K_c:
                 theme_idx = (theme_idx + 1) % len(THEMES)  # C = renk temasi
+            elif e.key == pygame.K_g:                 # G = drag yarisi (christmas tree)
+                if not drag_active and v < 1.5:
+                    drag_active = True
+                    drag_t = 0.0
+                    drag_gone = False
+                    drag_foul = False
+                    drag_react = None
+                else:
+                    drag_active = False
             elif e.key == pygame.K_n:
                 gear = 0 if gear != 0 else pick_gear(v)   # N = bos vites
             elif pygame.K_1 <= e.key <= pygame.K_8:
@@ -857,6 +886,16 @@ while running:
 
     flame = max(0.0, flame - dt * 4.0)        # alev parlamasi sonumu
 
+    # --- drag yarisi: christmas tree + tepki suresi ---
+    if drag_active:
+        drag_t += dt
+        if not drag_gone and drag_t > 0.55 and throttle > 0.4:
+            drag_foul = True                  # yesilden once gaz = foul
+        if drag_t >= 2.2 and not drag_gone:
+            drag_gone = True                  # YESIL
+        if drag_gone and drag_react is None and throttle > 0.4 and not drag_foul:
+            drag_react = drag_t - 2.2         # tepki suresi
+
     # --- drive-by: arac yanindan gecer (doppler + pan + mesafe) ---
     if driveby:
         DB_SPD = 72.0                         # ~260 km/h gecis
@@ -928,14 +967,26 @@ while running:
             del buf[0]
     draw_telemetry(40, 505, TW, 78)
 
-    # orta panel: vites + durum
-    gtxt = "N" if gear == 0 else str(gear)
-    gear_col = (90, 220, 90) if eng_run else (110, 110, 120)
-    gsurf = pygame.font.SysFont("Arial", 110, bold=True).render(gtxt, True, gear_col)
-    screen.blit(gsurf, (WIDTH / 2 - gsurf.get_width() / 2, 175))
-    mode = "OTO" if auto else "MANUEL"
-    msurf = _f_small.render(mode, True, (160, 162, 172))
-    screen.blit(msurf, (WIDTH / 2 - msurf.get_width() / 2, 300))
+    # orta panel: drag agaci VEYA vites
+    if drag_active:
+        draw_tree(WIDTH / 2, 110, drag_t, drag_gone, drag_foul)
+        if drag_foul:
+            rt = _f_med.render("ERKEN! (FOUL)", True, (255, 60, 50))
+        elif drag_react is not None:
+            rt = _f_med.render(f"TEPKI: {drag_react:.3f}s", True, (120, 220, 255))
+        elif drag_gone:
+            rt = _f_med.render("GIT!", True, (60, 230, 80))
+        else:
+            rt = _f_med.render("HAZIR...", True, (200, 200, 80))
+        screen.blit(rt, (WIDTH / 2 - rt.get_width() / 2, 355))
+    else:
+        gtxt = "N" if gear == 0 else str(gear)
+        gear_col = (90, 220, 90) if eng_run else (110, 110, 120)
+        gsurf = pygame.font.SysFont("Arial", 110, bold=True).render(gtxt, True, gear_col)
+        screen.blit(gsurf, (WIDTH / 2 - gsurf.get_width() / 2, 175))
+        mode = "OTO" if auto else "MANUEL"
+        msurf = _f_small.render(mode, True, (160, 162, 172))
+        screen.blit(msurf, (WIDTH / 2 - msurf.get_width() / 2, 300))
 
     # motor durumu rozeti (ust orta)
     if cranking:
@@ -988,7 +1039,7 @@ while running:
                                     True, (150, 200, 150)), (40, py + 50))
 
     # kontrol ipuclari (alt)
-    screen.blit(_f_small.render("SPACE calistir  •  ↑ gaz  •  SHIFT+↑ tam gaz  •  ↓ fren  •  ←/→ direksiyon  •  B el freni",
+    screen.blit(_f_small.render("SPACE calistir • ↑ gaz • SHIFT+↑ tam gaz • ↓ fren • ←/→ direksiyon • B el freni • G drag yarisi",
                                 True, (110, 112, 122)), (40, HEIGHT - 46))
     screen.blit(_f_small.render("A oto/manuel • M ses • T stage • R ortam • C tema • D drive-by • N bos • Z/X vites",
                                 True, (110, 112, 122)), (40, HEIGHT - 24))
