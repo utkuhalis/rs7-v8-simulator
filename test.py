@@ -24,6 +24,12 @@ exhaust_mode = True  # True=EGZOZ (disardan), False=MOTOR (kabin)
 brake = 0.0
 engine_on = False    # motor calisiyor mu
 cranking = False     # mars donuyor mu
+dying = False        # motor sonuyor mu (devir dususu)
+die_t = 0.0          # sonme sayaci
+dying_rpm0 = 0.0     # sonme baslangic devri
+engine_temp = 0.0    # 0=soguk 1=sicak (fast-idle + kaba rolanti)
+start_flare = 0.0    # calisma aninda kisa vroom
+engine_level = 0.0   # ses seviyesi zarfi (mars/sonme gecisleri)
 limiter = False      # devir limitine vuruyor mu (sert kesme)
 wheelspin = 0.0      # patinaj miktari (0..1) -> lastik cizirtisi
 g_smooth = 0.0       # yumusatilmis boyuna G kuvveti (g-metre)
@@ -133,8 +139,8 @@ class Engine:
         self.idx = np.arange(BLOCK)
 
     def callback(self, out, frames, t, status):
-        # --- motor kapali: sessizlik ---
-        if not engine_on and not cranking:
+        # --- motor kapali: sessizlik (engine_level zarfi mars/sonmeyi yonetir) ---
+        if engine_level <= 0.001:
             out[:] = 0.0
             return
 
@@ -253,13 +259,14 @@ class Engine:
             gate = 0.18 + 0.82 * (np.sin(2 * np.pi * lph) > -0.1)
             sig *= gate
 
-        # --- mars motoru cizirtisi (calistirma aninda) ---
+        # --- mars motoru: elektrikli vinlamasi + duzensiz chug ---
         if cranking:
-            stf = 95.0 / SR                      # marş diŝlisi vinlamasi
-            sph = self.turbo_ph * 3 + self.idx * stf
-            whir = signal.sawtooth(2 * np.pi * sph) * 0.10
-            whir *= (0.7 + 0.3 * np.random.rand(frames))
-            sig = sig * 0.45 + whir              # chug + marş
+            stf = 110.0 / SR                     # marş elektrik motoru
+            sph = self.turbo_ph * 4 + self.idx * stf
+            whir = (signal.sawtooth(2 * np.pi * sph) * 0.5
+                    + 0.5 * np.sin(2 * np.pi * sph * 2)) * 0.13
+            whir *= (0.6 + 0.4 * np.random.rand(frames))
+            sig = sig * 0.5 + whir               # chug + marş
 
         # --- cikis lowpass + yumusak limit (tanh = egzoz griftligi) ---
         sig, self.zi_out = signal.lfilter(OUT_B, OUT_A, sig, zi=self.zi_out)
@@ -277,8 +284,9 @@ class Engine:
         wL, self.zi_windL = signal.lfilter(WIND_B, WIND_A, np.random.randn(frames), zi=self.zi_windL)
         wR, self.zi_windR = signal.lfilter(WIND_B, WIND_A, np.random.randn(frames), zi=self.zi_windR)
 
-        out[:, 0] = (mono + wL * wind_amt).astype(np.float32)
-        out[:, 1] = (right_eng + wR * wind_amt).astype(np.float32)
+        # engine_level: mars (0.55) ve sonme (1->0) gecislerini yumusatir
+        out[:, 0] = ((mono + wL * wind_amt) * engine_level).astype(np.float32)
+        out[:, 1] = ((right_eng + wR * wind_amt) * engine_level).astype(np.float32)
 
 
 eng = Engine()
@@ -448,12 +456,14 @@ while running:
         if e.type == pygame.QUIT:
             running = False
         if e.type == pygame.KEYDOWN:
-            if e.key == pygame.K_SPACE:
-                if engine_on:                         # SPACE = calistir/durdur
+            if e.key == pygame.K_SPACE:               # SPACE = calistir/durdur
+                if engine_on and not dying:           # sonmeyi baslat
                     engine_on = False
-                    cranking = False
-                elif not cranking:
-                    cranking = True
+                    dying = True
+                    die_t = 0.0
+                    dying_rpm0 = max(rpm, IDLE_RPM)
+                elif not engine_on and not cranking and not dying:
+                    cranking = True                   # marsi baslat
                     crank_t = 0.0
             elif e.key == pygame.K_a:
                 auto = not auto                       # A = oto/manuel
@@ -483,26 +493,46 @@ while running:
     brake = 1.0 if keys[pygame.K_DOWN] else 0.0
 
     in_gear = gear != 0
-    eng_run = engine_on and not cranking
+    eng_run = engine_on and not cranking and not dying
+
+    # motor isinmasi (calisirken soguk -> sicak)
+    if engine_on and not cranking:
+        engine_temp = min(1.0, engine_temp + dt / 50.0)
+    current_idle = IDLE_RPM + (1.0 - engine_temp) * 320.0   # soguk fast-idle
 
     # --- ates / devir durumu ---
     if cranking:
         crank_t += dt
-        rpm = 260 + 70 * math.sin(crank_t * 38)        # marş chug
-        rev_rpm = IDLE_RPM
-        if crank_t > 0.75:                             # motor tutuştu
+        crank_dur = 1.15 if engine_temp < 0.3 else 0.65    # soguk -> uzun mars
+        # duzensiz, yavas mars cevirme
+        rpm = 230 + 70 * math.sin(crank_t * 26) + np.random.rand() * 45
+        rev_rpm = current_idle
+        engine_level = 0.55
+        if crank_t > crank_dur:                            # motor tutustu
             cranking = False
             engine_on = True
             eng_run = True
-            pop_burst = 0.5                            # calisirken hafif blip
+            start_flare = 1.0                              # kisa vroom
+            pop_burst = 0.5
+    elif dying:
+        die_t += dt
+        rpm = max(0.0, dying_rpm0 * (1.0 - die_t / 1.1))   # devir 0'a duser
+        engine_level = max(0.0, 1.0 - die_t / 1.1)
+        if die_t >= 1.1:
+            dying = False
+            rpm = 0.0
+            engine_level = 0.0
     elif not engine_on:
         rpm = 0.0
         throttle = 0.0
-    elif in_gear:
-        rpm = max(IDLE_RPM, min(rpm_from_speed(v, gear), MAX_RPM))
-        rev_rpm = rpm                                  # N'e gecince yumusak
+        engine_level = 0.0
     else:
-        rpm = rev_rpm                                  # bos vites: serbest devir
+        engine_level = 1.0
+        if in_gear:
+            rpm = max(current_idle, min(rpm_from_speed(v, gear), MAX_RPM))
+            rev_rpm = rpm                                  # N'e gecince yumusak
+        else:
+            rpm = rev_rpm                                  # bos vites: serbest devir
 
     # --- otomatik vites (sadece calisirken & viteste) ---
     if eng_run and auto and in_gear and shift_timer <= 0:
@@ -580,24 +610,32 @@ while running:
     if launching:
         pass                                          # rpm zaten launch_rpm
     elif eng_run and in_gear:
-        rpm = max(IDLE_RPM, min(rpm_from_speed(v, gear), MAX_RPM))
+        rpm = max(current_idle, min(rpm_from_speed(v, gear), MAX_RPM))
         if launch_boost > 0:
             rpm = max(rpm, 2600)                      # kalkista devri tut
         if wheelspin > 0:
             rpm = min(MAX_RPM, rpm + wheelspin * 1800)  # patinaj devir flare
     elif eng_run:
         # bos viteste serbest devir dinamigi (free-rev)
-        net = throttle * torque(rev_rpm) - REV_FR * (rev_rpm - IDLE_RPM)
+        net = throttle * torque(rev_rpm) - REV_FR * (rev_rpm - current_idle)
         if rev_rpm >= REDLINE and throttle > 0.05:
-            net = -REV_FR * (rev_rpm - IDLE_RPM)      # devir limiti: yakit kes
+            net = -REV_FR * (rev_rpm - current_idle)  # devir limiti: yakit kes
             pop_burst = max(pop_burst, 0.8)
-        rev_rpm = min(MAX_RPM, max(IDLE_RPM, rev_rpm + net * REV_K * dt))
+        rev_rpm = min(MAX_RPM, max(current_idle, rev_rpm + net * REV_K * dt))
         rpm = rev_rpm
 
-    # --- rolanti dalgalanmasi (lope): motoru canli gosterir ---
-    if eng_run and throttle < 0.05 and rpm < IDLE_RPM + 220:
+    # --- rolanti dalgalanmasi (lope): soguk motor daha kaba ---
+    if eng_run and throttle < 0.05 and rpm < current_idle + 220:
         idle_phase += dt
-        rpm += 13 * math.sin(idle_phase * 6.3) + (np.random.rand() - 0.5) * 8
+        rough = 1.0 + 1.6 * (1.0 - engine_temp)        # soguk -> daha kaba
+        rpm += (13 * math.sin(idle_phase * 6.3) + (np.random.rand() - 0.5) * 8) * rough
+
+    # --- calisma vroom flare (mars sonrasi kisa yukselip oturma) ---
+    if start_flare > 0.01:
+        start_flare *= 0.90
+        rpm += start_flare * 550
+    else:
+        start_flare = 0.0
 
     # --- mesafe & performans kronometresi ---
     dist += v * dt
@@ -650,6 +688,10 @@ while running:
     # motor durumu rozeti (ust orta)
     if cranking:
         est, ecol = "MARŞ...", (255, 200, 80)
+    elif dying:
+        est, ecol = "SÖNÜYOR...", (255, 160, 80)
+    elif engine_on and engine_temp < 0.5:
+        est, ecol = "● SOĞUK — ISINIYOR", (120, 200, 255)
     elif engine_on:
         est, ecol = "● MOTOR CALISIYOR", (90, 220, 90)
     else:
