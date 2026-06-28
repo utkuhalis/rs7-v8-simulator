@@ -74,11 +74,26 @@ RESONATORS = [
     dict(f=155,  Q=7,  base=0.90, load=0.10),
     dict(f=330,  Q=8,  base=0.65, load=0.35),   # govde
     dict(f=620,  Q=10, base=0.35, load=0.55),
-    dict(f=1250, Q=12, base=0.10, load=0.75),   # rasp (gazla acilir)
+    dict(f=1250, Q=14, base=0.12, load=0.85),   # rasp (gazla acilir)
+    dict(f=2200, Q=20, base=0.05, load=1.00),   # metalik cin (yuksek-Q)
+    dict(f=3400, Q=24, base=0.02, load=0.80),   # metalik tiz rasp
 ]
 for r in RESONATORS:
     r["b"], r["a"] = rbj_bandpass(r["f"], r["Q"])
     r["zi"] = np.zeros(2)
+
+
+def make_comb(freq, g):
+    # geri beslemeli comb (waveguide) -> egzoz borusu metalik rezonansi
+    D = int(round(SR / freq))
+    a = np.zeros(D + 1); a[0] = 1.0; a[D] = -g
+    b = np.zeros(D + 1); b[0] = 1.0
+    return b, a, D
+
+
+COMB_B, COMB_A, COMB_D = make_comb(190.0, 0.80)   # ~190 Hz boru rezonansi
+# combine giren metalik tiz kismi icin high-pass
+HP_B, HP_A = signal.butter(2, 700 / (SR / 2), btype="high")
 
 # Sub-bass (gogus thump) - derin alt frekanslar
 SUB_B, SUB_A = signal.butter(2, 95 / (SR / 2), btype="low")
@@ -136,6 +151,8 @@ class Engine:
         self.dly_tail = np.zeros(14)        # stereo genislik (Haas) gecikmesi
         self.zi_tire = np.zeros(len(TIRE_A) - 1)
         self.tire_ph = 0.0                  # lastik squeal tonu fazi
+        self.zi_hp = np.zeros(len(HP_A) - 1)
+        self.zi_comb = np.zeros(COMB_D)     # comb (boru) gecikme hatti
         self.idx = np.arange(BLOCK)
 
     def callback(self, out, frames, t, status):
@@ -176,11 +193,17 @@ class Engine:
             w = res["base"] + res["load"] * (0.3 + 0.7 * thr)
             body += w * y
 
+        # --- metalik egzoz borusu rezonansi (comb/waveguide) ---
+        # govdenin tiz kismini geri-beslemeli comb'dan gecir -> metalik "cin"
+        metal_in, self.zi_hp = signal.lfilter(HP_B, HP_A, body, zi=self.zi_hp)
+        metal, self.zi_comb = signal.lfilter(COMB_B, COMB_A, metal_in, zi=self.zi_comb)
+        metal_gain = (0.30 + 0.55 * thr) * (1.0 if exhaust_mode else 0.4)
+
         # --- sub-bass thump (derin gogus frekanslari) ---
         sub, self.zi_sub = signal.lfilter(SUB_B, SUB_A, imp, zi=self.zi_sub)
         sub *= 2.7
 
-        sig = 4.4 * body + 2.3 * sub
+        sig = 4.4 * body + 2.3 * sub + metal * metal_gain
 
         # --- egzoz patlamalari: gercek "pat" cekirdekleri, overlap-add ---
         global pop_burst
