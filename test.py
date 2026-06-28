@@ -328,6 +328,7 @@ class Engine:
         master = 0.62 if exhaust_mode else 0.55
         drive = (1.8 + 1.0 * thr) if exhaust_mode else (1.3 + 0.6 * thr)
         mono = np.tanh(sig * drive) * master
+        mono = np.tanh(reverb.process(mono))   # ortam akustigi + guvenli limit
 
         # --- stereo genislik: R kanali kucuk gecikme (Haas) ---
         delayed = np.concatenate([self.dly_tail, mono])
@@ -344,6 +345,34 @@ class Engine:
         out[:, 1] = ((right_eng + wR * wind_amt) * engine_level).astype(np.float32)
 
 
+class BlockReverb:
+    """Blok-granuler geri beslemeli comb reverb (hizli). Ortam akustigi."""
+    ENV_NAMES = ["ACIK", "GARAJ", "TUNEL"]
+
+    def __init__(self):
+        self.taps = [3, 4, 5, 7]      # gecikme (blok cinsinden)
+        self.hist = {t: [np.zeros(BLOCK) for _ in range(t)] for t in set(self.taps)}
+        self.set_env(0)
+
+    def set_env(self, e):
+        self.env = e % 3
+        self.fb = [0.0, 0.50, 0.66][self.env]
+        self.wet = [0.0, 0.24, 0.40][self.env]
+
+    def process(self, x):
+        if self.wet <= 0 or len(x) != BLOCK:
+            return x
+        wet = np.zeros(BLOCK)
+        for t in self.taps:
+            y = x + self.fb * self.hist[t][0]
+            self.hist[t].append(y)
+            self.hist[t].pop(0)
+            wet += y
+        wet /= len(self.taps)
+        return x * (1 - 0.4 * self.wet) + wet * self.wet
+
+
+reverb = BlockReverb()
 eng = Engine()
 stream = sd.OutputStream(samplerate=SR, blocksize=BLOCK, channels=2,
                          dtype="float32", callback=eng.callback)
@@ -528,6 +557,8 @@ while running:
                 exhaust_mode = not exhaust_mode       # M = motor/egzoz sesi
             elif e.key == pygame.K_t:
                 stage = (stage + 1) % 4               # T = stage (tuning) degistir
+            elif e.key == pygame.K_r:
+                reverb.set_env(reverb.env + 1)        # R = ortam (akustik) degistir
             elif e.key == pygame.K_n:
                 gear = 0 if gear != 0 else pick_gear(v)   # N = bos vites
             elif pygame.K_1 <= e.key <= pygame.K_8:
@@ -793,7 +824,8 @@ while running:
 
     # gaz/fren/ses durumu (orta)
     snd = "EGZOZ" if exhaust_mode else "MOTOR"
-    info = _f_small.render(f"GAZ %{int(throttle*100)}   SES: {snd}", True, (170, 172, 182))
+    env_nm = BlockReverb.ENV_NAMES[reverb.env]
+    info = _f_small.render(f"GAZ %{int(throttle*100)}   SES: {snd}   ORTAM: {env_nm}", True, (170, 172, 182))
     screen.blit(info, (WIDTH / 2 - info.get_width() / 2, 62))
     # stage rozeti (sol ust)
     scol = [(160, 200, 160), (255, 210, 90), (255, 150, 60), (255, 70, 60)][stage]
@@ -826,7 +858,7 @@ while running:
     # kontrol ipuclari (alt)
     screen.blit(_f_small.render("SPACE calistir  •  ↑ gaz  •  SHIFT+↑ tam gaz  •  ↓ fren  •  ←/→ direksiyon  •  B el freni",
                                 True, (110, 112, 122)), (40, HEIGHT - 46))
-    screen.blit(_f_small.render("A oto/manuel  •  M motor/egzoz  •  T stage  •  N bos  •  Z/X vites  •  1-8 vites",
+    screen.blit(_f_small.render("A oto/manuel  •  M motor/egzoz  •  T stage  •  R ortam  •  N bos  •  Z/X vites",
                                 True, (110, 112, 122)), (40, HEIGHT - 24))
     pygame.display.flip()
 
