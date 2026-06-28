@@ -33,6 +33,7 @@ engine_level = 0.0   # ses seviyesi zarfi (mars/sonme gecisleri)
 limiter = False      # devir limitine vuruyor mu (sert kesme)
 wheelspin = 0.0      # patinaj miktari (0..1) -> lastik cizirtisi
 g_smooth = 0.0       # yumusatilmis boyuna G kuvveti (g-metre)
+flame = 0.0          # egzoz alevi parlamasi (0..1), BANG'de tetiklenir
 stage = 0            # 0=STOCK, 1/2/3 = ECU tuning stage
 STAGE_MUL = [1.0, 1.22, 1.42, 1.65]            # tork carpani
 STAGE_NAMES = ["STOCK", "STAGE 1", "STAGE 2", "STAGE 3"]
@@ -128,6 +129,21 @@ def make_pop_kernel(c):
 
 POP_KERNELS = [make_pop_kernel(i / 5.0) for i in range(6)]
 
+# Buyuk anti-lag patlamasi (BANG) - alt boom + catirti
+BOOM_LEN = int(0.18 * SR)
+
+
+def make_boom():
+    t = np.arange(BOOM_LEN) / SR
+    env = np.exp(-t * 15)
+    boom = (np.sin(2 * np.pi * 55 * t) + 0.5 * np.sin(2 * np.pi * 90 * t)) * env
+    crack = np.random.randn(BOOM_LEN) * np.exp(-t * 55) * 0.6
+    k = boom + crack
+    return (k / (np.max(np.abs(k)) + 1e-9)).astype(np.float64)
+
+
+BOOM_KERNEL = make_boom()
+
 
 class Engine:
     def __init__(self):
@@ -153,6 +169,7 @@ class Engine:
         self.tire_ph = 0.0                  # lastik squeal tonu fazi
         self.zi_hp = np.zeros(len(HP_A) - 1)
         self.zi_comb = np.zeros(COMB_D)     # comb (boru) gecikme hatti
+        self.boom_tail = np.zeros(BOOM_LEN)  # buyuk BANG kuyrugu
         self.idx = np.arange(BLOCK)
 
     def callback(self, out, frames, t, status):
@@ -234,6 +251,18 @@ class Engine:
         # ses modu: EGZOZ = patlamalar one cikar, MOTOR = boguk/mekanik
         pop_gain = (0.9 if exhaust_mode else 0.30) * (1.0 + 0.18 * stage)
         sig += pop_out * pop_gain
+
+        # --- buyuk anti-lag BANG + alev (lift sirasinda, ara sira) ---
+        global flame
+        work_b = np.zeros(frames + BOOM_LEN)
+        work_b[:BOOM_LEN] += self.boom_tail
+        if burst > 0.4 and r > 3000 and np.random.rand() < (0.30 + 0.16 * stage):
+            p = np.random.randint(0, frames)
+            work_b[p:p + BOOM_LEN] += BOOM_KERNEL * (0.8 + 0.5 * np.random.rand())
+            flame = 1.0                        # gorsel alev tetigi
+        boom_out = work_b[:frames]
+        self.boom_tail = work_b[frames:frames + BOOM_LEN]
+        sig += boom_out * (1.3 if exhaust_mode else 0.5)
 
         # --- intake / induction noise (motor modunda daha belirgin) ---
         noise = np.random.randn(frames)
@@ -660,6 +689,8 @@ while running:
     else:
         start_flare = 0.0
 
+    flame = max(0.0, flame - dt * 4.0)        # alev parlamasi sonumu
+
     # --- mesafe & performans kronometresi ---
     dist += v * dt
     if v < 0.6:
@@ -730,6 +761,9 @@ while running:
     scol = [(160, 200, 160), (255, 210, 90), (255, 150, 60), (255, 70, 60)][stage]
     st_txt = f"{STAGE_NAMES[stage]} • ~{STAGE_HP[stage]} hp"
     screen.blit(_f_med.render(st_txt, True, scol), (40, 30))
+    if flame > 0.15:
+        fb = _f_med.render("🔥 BANG", True, (255, int(120 + 100 * flame), 40))
+        screen.blit(fb, (WIDTH / 2 - fb.get_width() / 2, 128))
     if wheelspin > 0.05:
         ws = _f_med.render("PATINAJ!", True, (255, 160, 40))
         screen.blit(ws, (WIDTH / 2 - ws.get_width() / 2, 128))
