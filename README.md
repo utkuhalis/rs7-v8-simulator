@@ -11,26 +11,28 @@ gerçek zamanlı üretilir.
 
 ### 🔊 Ses
 - **Cross-plane V8 karakteri** — ateşleme darbe treni + banka düzensizliği (lope/burble)
-- **Rezonans tabanlı egzoz** — gerçek egzoz borusu rezonansları (saf sinüs değil)
-- **Gerçek patlama çekirdekleri** — gaz kesince "pat-pat-pat" overrun çıtırtısı
+- **Rezonans + comb (waveguide)** — gerçek egzoz borusunun **metalik** tınısı
+- **Gerçek patlama çekirdekleri** — gaz kesince "pat-pat-pat" + büyük **anti-lag BANG**
 - **Turbo spool + blow-off** — yükselen ıslık ve gaz kesince "pışş" dump valf
-- **Marş + rölanti lope** — çalıştırma sesi ve canlı rölanti dalgalanması
-- **Rev-limiter sert kesme** — devir tavanında ritmik "düt-düt"
-- **Lastik cızırtısı** — patinajda squeal
-- **Stereo + rüzgâr** — Haas genişliği, hıza bağlı yol gürültüsü, sub-bass thump
-- **EGZOZ / MOTOR ses modu** — dışarıdan vs kabin içi dinleme
+- **Marş + söndürme + soğuk start** — gerçekçi çalıştırma/sönme, fast-idle, kaba rölanti
+- **Rev-limiter sert kesme**, **rev-match blip**, **lastik cızırtısı**
+- **Stereo + rüzgâr + ortam reverb** (Açık/Garaj/Tünel)
+- **Drive-by / Doppler** modu, **EGZOZ / MOTOR** ses modu, **Stage 1/2/3** ses agresifliği
 
 ### 🏁 Fizik (gerçek RS7 C8 verileri)
 - 800 Nm tork eğrisi (2050–4500 rpm düz), ~6800 devir limiti
-- Gerçek 8 ileri şanzıman oranları, final drive, drag modeli
-- **0–100 km/h ~3.9s** (launch ile ~3.0s), üst hız **~300 km/h**, çeyrek mil ~11.6s
+- **Stage 1/2/3 tuning**: 0–100 ~3.5 / 3.0 / 2.6 / 2.3s
+- Gerçek 8 ileri şanzıman, final drive, drag; üst hız **~300 km/h**, çeyrek mil ~11.6s
+- **Launch control**, **patinaj**, **direksiyon + viraj + drift** (el freni)
 - Motor freni, boş vites (N) + free-rev, fren, oto/manuel vites
-- **Launch control**, traksiyon limiti + **patinaj**, motor çalıştır/durdur
+- **Yakıt** tüketimi + **motor ısısı**, motor çalıştır/durdur
 
 ### 📊 HUD (Audi Virtual Cockpit tarzı)
-- Analog devir saati (redline yayı) + hız göstergesi kadranları
-- F1 tarzı **shift light** LED barı, **G-metre**, büyük vites göstergesi
-- Canlı 0–100 / çeyrek mil kronometresi ve en iyi dereceler
+- Analog devir saati + hız kadranı, F1 **shift light**, **G-metre** (boyuna + yanal)
+- **Yan görünüm araç** (dönen jant, egzoz alevi, drift dumanı) + renk **temaları**
+- **Telemetri grafiği** (rpm/hız/G), yakıt/ısı barları
+- Canlı 0–100 / çeyrek mil + **kalıcı** en iyi dereceler (dosyaya kayıt)
+- **Drag yarışı modu** (christmas tree + reaction time)
 
 ## Kurulum
 
@@ -44,14 +46,21 @@ python test.py
 | Tuş | İşlev |
 |-----|-------|
 | `Space` | Motoru çalıştır / durdur |
-| `↑` | Gaz (kısmi, feather edilebilir) |
-| `Shift + ↑` | Tam gaz |
+| `↑` / `Shift+↑` | Gaz / tam gaz |
 | `↓` | Fren |
+| `← / →` | Direksiyon |
+| `B` | El freni (drift) |
+| `Z / X` | Manuel vites düşür / yükselt |
+| `1–8` | Direkt vites seç |
+| `N` | Boş vites (free-rev) |
 | `A` | Oto / Manuel vites |
 | `M` | Motor / Egzoz ses modu |
-| `N` | Boş vites (free-rev) |
-| `← / →` | Vites düşür / yükselt (manuel) |
-| `1–8` | Direkt vites seç |
+| `T` | Stage (tuning) değiştir |
+| `R` | Ortam akustiği (Açık/Garaj/Tünel) |
+| `C` | Renk teması |
+| `D` | Drive-by (yanından geçiş) |
+| `G` | Drag yarışı (christmas tree) |
+| `F` | Yakıt doldur |
 
 > **Launch control:** Dururken `↓` fren + `Shift+↑` tam gaz ile devri tut, sonra freni bırak → fırla.
 
