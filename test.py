@@ -36,6 +36,12 @@ g_smooth = 0.0       # yumusatilmis boyuna G kuvveti (g-metre)
 g_lat_smooth = 0.0   # yumusatilmis yanal G (viraj)
 steer = 0.0          # direksiyon (-1..1)
 drifting = False     # kayma / drift durumu
+driveby = False      # yanindan gecis (drive-by) animasyonu
+db_x = 0.0           # sanal arac konumu (m)
+doppler = 1.0        # doppler frekans carpani
+db_lg = 1.0          # sol kanal kazanci (pan)
+db_rg = 1.0          # sag kanal kazanci (pan)
+db_vol = 1.0         # mesafe ses zarfi
 flame = 0.0          # egzoz alevi parlamasi (0..1), BANG'de tetiklenir
 stage = 0            # 0=STOCK, 1/2/3 = ECU tuning stage
 STAGE_MUL = [1.0, 1.22, 1.42, 1.65]            # tork carpani
@@ -188,7 +194,7 @@ class Engine:
         thr = self.s_thr
         rn = np.clip((r - IDLE_RPM) / (MAX_RPM - IDLE_RPM), 0, 1)
 
-        cyc_freq = r / 120.0          # cevrim/saniye (2 tur)
+        cyc_freq = r / 120.0 * doppler   # cevrim/saniye (2 tur) * doppler
         inc = cyc_freq / SR
         span = frames * inc
 
@@ -340,9 +346,10 @@ class Engine:
         wL, self.zi_windL = signal.lfilter(WIND_B, WIND_A, np.random.randn(frames), zi=self.zi_windL)
         wR, self.zi_windR = signal.lfilter(WIND_B, WIND_A, np.random.randn(frames), zi=self.zi_windR)
 
-        # engine_level: mars (0.55) ve sonme (1->0) gecislerini yumusatir
-        out[:, 0] = ((mono + wL * wind_amt) * engine_level).astype(np.float32)
-        out[:, 1] = ((right_eng + wR * wind_amt) * engine_level).astype(np.float32)
+        # engine_level: mars/sonme; db_*: drive-by pan + mesafe sesi
+        lvl = engine_level * db_vol
+        out[:, 0] = ((mono + wL * wind_amt) * lvl * db_lg).astype(np.float32)
+        out[:, 1] = ((right_eng + wR * wind_amt) * lvl * db_rg).astype(np.float32)
 
 
 class BlockReverb:
@@ -559,6 +566,9 @@ while running:
                 stage = (stage + 1) % 4               # T = stage (tuning) degistir
             elif e.key == pygame.K_r:
                 reverb.set_env(reverb.env + 1)        # R = ortam (akustik) degistir
+            elif e.key == pygame.K_d and not driveby:
+                driveby = True                        # D = yanindan gecis (drive-by)
+                db_x = -240.0
             elif e.key == pygame.K_n:
                 gear = 0 if gear != 0 else pick_gear(v)   # N = bos vites
             elif pygame.K_1 <= e.key <= pygame.K_8:
@@ -760,6 +770,23 @@ while running:
 
     flame = max(0.0, flame - dt * 4.0)        # alev parlamasi sonumu
 
+    # --- drive-by: arac yanindan gecer (doppler + pan + mesafe) ---
+    if driveby:
+        DB_SPD = 72.0                         # ~260 km/h gecis
+        db_x += DB_SPD * dt
+        dy = 6.0                              # yanal mesafe (m)
+        d = math.hypot(db_x, dy)
+        vr = DB_SPD * (db_x / d)              # radyal hiz (+ uzaklasir)
+        doppler = 343.0 / (343.0 + vr)        # yaklasirken tiz, sonra pes
+        db_vol = min(1.0, 11.0 / d)
+        pan = max(-1.0, min(1.0, db_x / d))
+        db_lg = math.sqrt(0.5 * (1 - pan))
+        db_rg = math.sqrt(0.5 * (1 + pan))
+        if db_x > 240:
+            driveby = False
+    if not driveby:
+        doppler = db_vol = db_lg = db_rg = 1.0
+
     # --- mesafe & performans kronometresi ---
     dist += v * dt
     if v < 0.6:
@@ -843,6 +870,9 @@ while running:
     if launching:
         lc = _f_med.render("◉ LAUNCH CONTROL", True, (255, 210, 70))
         screen.blit(lc, (WIDTH / 2 - lc.get_width() / 2, 128))
+    if driveby:
+        db = _f_med.render("DRIVE-BY ►►", True, (120, 220, 255))
+        screen.blit(db, (WIDTH / 2 - db.get_width() / 2, 128))
 
     # performans paneli (alt)
     py = 430
@@ -858,7 +888,7 @@ while running:
     # kontrol ipuclari (alt)
     screen.blit(_f_small.render("SPACE calistir  •  ↑ gaz  •  SHIFT+↑ tam gaz  •  ↓ fren  •  ←/→ direksiyon  •  B el freni",
                                 True, (110, 112, 122)), (40, HEIGHT - 46))
-    screen.blit(_f_small.render("A oto/manuel  •  M motor/egzoz  •  T stage  •  R ortam  •  N bos  •  Z/X vites",
+    screen.blit(_f_small.render("A oto/manuel  •  M motor/egzoz  •  T stage  •  R ortam  •  D drive-by  •  N bos  •  Z/X vites",
                                 True, (110, 112, 122)), (40, HEIGHT - 24))
     pygame.display.flip()
 
