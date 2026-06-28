@@ -27,6 +27,10 @@ cranking = False     # mars donuyor mu
 limiter = False      # devir limitine vuruyor mu (sert kesme)
 wheelspin = 0.0      # patinaj miktari (0..1) -> lastik cizirtisi
 g_smooth = 0.0       # yumusatilmis boyuna G kuvveti (g-metre)
+stage = 0            # 0=STOCK, 1/2/3 = ECU tuning stage
+STAGE_MUL = [1.0, 1.22, 1.42, 1.65]            # tork carpani
+STAGE_NAMES = ["STOCK", "STAGE 1", "STAGE 2", "STAGE 3"]
+STAGE_HP = [600, 700, 800, 1000]               # gosterge icin (~hp)
 
 gear_ratios = {1: 4.71, 2: 3.14, 3: 2.10, 4: 1.67,
                5: 1.29, 6: 1.00, 7: 0.84, 8: 0.67}
@@ -187,7 +191,8 @@ class Engine:
         work[:POP_LEN] += self.pop_tail
         if intensity > 0.01:
             # patlama yogunlugu: overrun seyrek "pat..pat", burst sik "patpatpat"
-            rate = 18.0 * ov + 75.0 * burst        # saniyedeki patlama sayisi
+            # yuksek stage -> daha cok anti-lag patlama
+            rate = (18.0 * ov + 75.0 * burst) * (1.0 + 0.35 * stage)
             n_pop = np.random.poisson(rate * frames / SR)
             for _ in range(int(n_pop)):
                 p = np.random.randint(0, frames)
@@ -198,7 +203,7 @@ class Engine:
         self.pop_tail = work[frames:frames + POP_LEN]
 
         # ses modu: EGZOZ = patlamalar one cikar, MOTOR = boguk/mekanik
-        pop_gain = 0.9 if exhaust_mode else 0.30
+        pop_gain = (0.9 if exhaust_mode else 0.30) * (1.0 + 0.18 * stage)
         sig += pop_out * pop_gain
 
         # --- intake / induction noise (motor modunda daha belirgin) ---
@@ -216,7 +221,7 @@ class Engine:
         ti = tf / SR
         tph = self.turbo_ph + self.idx * ti
         self.turbo_ph = (self.turbo_ph + frames * ti) % 1.0
-        tgain = (0.05 if exhaust_mode else 0.11) * (0.25 + 0.9 * self.boost)
+        tgain = (0.05 if exhaust_mode else 0.11) * (0.25 + 0.9 * self.boost) * (1.0 + 0.25 * stage)
         sig += np.sin(2 * np.pi * tph) * tgain
 
         # --- blow-off / dump valf "psshh" (boost varken gaz kesilince) ---
@@ -288,10 +293,10 @@ TIRE_CIRC = 2.16                 # m (275/35 R21 cevre)
 WHEEL_R = TIRE_CIRC / (2 * math.pi)
 FINAL = 3.7                      # diferansiyel orani
 MASS = 2075.0                    # kg
-EFF = 0.85                       # aktarma verimi
+EFF = 0.90                       # aktarma verimi
 CD, ROLL_V, ROLL0 = 0.26, 12.0, 120.0   # drag: CD*v^2 + ROLL_V*v + ROLL0
 EB_TQ = 150.0                    # motor freni torku (Nm), gaz kapali iken
-MU = 1.15                        # lastik tutus katsayisi (quattro AWD, sport)
+MU = 1.30                        # lastik tutus katsayisi (quattro AWD, sport)
 GRIP = MU * MASS * 9.81          # max aktarilabilir tahrik kuvveti (N)
 REV_K = 20.0                     # serbest devir ivme katsayisi (bos viteste)
 REV_FR = 0.040                   # motor ic surtunmesi (devir dususu)
@@ -326,12 +331,15 @@ def pick_gear(v_ms):
 
 
 def torque(rp):
-    # Nm: dusukte yukselir, 2050-4500 duz 800, sonra guc sinirli duser
+    # Nm: dusukte yukselir, 2050-4500 duz 800, sonra guc sinirli duser.
+    # Stage (ECU tuning) torku carpan olarak artirir.
     if rp < 2050:
-        return 800.0 * (0.55 + 0.45 * rp / 2050.0)
-    if rp <= 4500:
-        return 800.0
-    return max(150.0, 800.0 * (4500.0 / rp) * 0.92)
+        base = 800.0 * (0.55 + 0.45 * rp / 2050.0)
+    elif rp <= 4500:
+        base = 800.0
+    else:
+        base = max(220.0, 800.0 * (4500.0 / rp) * 0.96)
+    return base * STAGE_MUL[stage]
 
 
 def rpm_from_speed(v_ms, g):
@@ -451,6 +459,8 @@ while running:
                 auto = not auto                       # A = oto/manuel
             elif e.key == pygame.K_m:
                 exhaust_mode = not exhaust_mode       # M = motor/egzoz sesi
+            elif e.key == pygame.K_t:
+                stage = (stage + 1) % 4               # T = stage (tuning) degistir
             elif e.key == pygame.K_n:
                 gear = 0 if gear != 0 else pick_gear(v)   # N = bos vites
             elif pygame.K_1 <= e.key <= pygame.K_8:
@@ -496,9 +506,9 @@ while running:
 
     # --- otomatik vites (sadece calisirken & viteste) ---
     if eng_run and auto and in_gear and shift_timer <= 0:
-        if gear < 8 and rpm > 6550 and throttle > 0.05:
+        if gear < 8 and rpm > 6700 and throttle > 0.05:
             gear += 1
-            shift_timer = 0.12
+            shift_timer = 0.07
             pop_burst = 1.0                            # yukari vites -> BRAP bang
             bov_burst = max(bov_burst, 0.6)            # vites arasi turbo flutter
         elif gear > 1 and rpm < 2300 and throttle < 0.85:
@@ -544,7 +554,7 @@ while running:
         # --- traksiyon limiti: tutus asilirsa patinaj ---
         if launch_boost == 0 and drive > GRIP and v > 0.3:
             wheelspin = min(1.0, (drive - GRIP) / GRIP)
-            drive = GRIP + (drive - GRIP) * 0.25   # cogu kuvvet bosa doner
+            drive = GRIP + (drive - GRIP) * 0.45   # bir kismi yine de tutar
         else:
             wheelspin = 0.0
         if rpm >= REDLINE or shift_timer > 0:
@@ -651,6 +661,10 @@ while running:
     snd = "EGZOZ" if exhaust_mode else "MOTOR"
     info = _f_small.render(f"GAZ %{int(throttle*100)}   SES: {snd}", True, (170, 172, 182))
     screen.blit(info, (WIDTH / 2 - info.get_width() / 2, 62))
+    # stage rozeti (sol ust)
+    scol = [(160, 200, 160), (255, 210, 90), (255, 150, 60), (255, 70, 60)][stage]
+    st_txt = f"{STAGE_NAMES[stage]} • ~{STAGE_HP[stage]} hp"
+    screen.blit(_f_med.render(st_txt, True, scol), (40, 30))
     if wheelspin > 0.05:
         ws = _f_med.render("PATINAJ!", True, (255, 160, 40))
         screen.blit(ws, (WIDTH / 2 - ws.get_width() / 2, 128))
@@ -672,7 +686,7 @@ while running:
     # kontrol ipuclari (alt)
     screen.blit(_f_small.render("SPACE calistir  •  ↑ gaz  •  SHIFT+↑ tam gaz  •  ↓ fren  •  N bos",
                                 True, (110, 112, 122)), (40, HEIGHT - 46))
-    screen.blit(_f_small.render("A oto/manuel  •  M motor/egzoz ses  •  ←/→ vites  •  1-8 direkt vites",
+    screen.blit(_f_small.render("A oto/manuel  •  M motor/egzoz  •  T stage (tuning)  •  ←/→ vites  •  1-8 vites",
                                 True, (110, 112, 122)), (40, HEIGHT - 24))
     pygame.display.flip()
 
